@@ -29,8 +29,8 @@ test("keeps the toolbar popup as the compact mode", () => {
   assert.equal(manifest.action.default_popup, "popup.html");
 });
 
-test("publishes the initialized repository build as extension version 0.10.1", () => {
-  assert.equal(manifest.version, "0.10.1");
+test("publishes the Chrome direct qB fallback as extension version 0.10.3", () => {
+  assert.equal(manifest.version, "0.10.3");
 });
 
 test("service worker imports and migrates the local downloader preset", () => {

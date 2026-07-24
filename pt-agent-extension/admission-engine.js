@@ -24,7 +24,10 @@ globalThis.PT_AGENT_ADMISSION = (() => {
     if (sizeGB > config.maxTorrentSizeGB) reasons.push(`体积超过 ${config.maxTorrentSizeGB}GB`);
     if (torrent?.leftHours === null || !Number.isFinite(Number(torrent?.leftHours))) {
       reasons.push("无法确认 Free 剩余时间");
-    } else if (Number(torrent.leftHours) < config.minFreeHoursForAutoDownload) {
+    } else if (
+      Number(torrent.leftHours) < config.minFreeHoursForAutoDownload &&
+      torrent?.scarceHighDemandOpportunity !== true
+    ) {
       reasons.push(`Free 剩余不足 ${config.minFreeHoursForAutoDownload} 小时`);
     }
     if (activeDownloads + batchQueued >= config.maxActiveDownloads) {

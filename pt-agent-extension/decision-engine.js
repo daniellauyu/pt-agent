@@ -15,6 +15,21 @@ globalThis.PT_AGENT_DECISION = (() => {
     const seeders = Number(torrent.seeders || 0);
     const leechers = Number(torrent.leechers || 0);
     const demandRatio = seeders > 0 ? leechers / seeders : Infinity;
+    const usableSeconds = left === null
+      ? 0
+      : Math.max(0, left * 3600 - Number(settings.guardMinutes || 10) * 60);
+    const requiredSpeedBps = usableSeconds > 0
+      ? Number(torrent.sizeBytes || 0) / usableSeconds
+      : Infinity;
+    const scarceHighDemandOpportunity =
+      seeders >= 1 &&
+      seeders <= 2 &&
+      leechers >= Number(settings.scarceOpportunityMinLeechers || 20) &&
+      demandRatio >= Number(settings.scarceOpportunityMinDemandRatio || 10) &&
+      sizeGB <= Number(settings.maxTorrentSizeGB || 50) &&
+      left !== null &&
+      left >= Number(settings.scarceOpportunityMinFreeHours || 6) &&
+      requiredSpeedBps <= Number(settings.scarceOpportunityMaxRequiredSpeedBps || 512 * 1024);
 
     if (settings.rejectHr && torrent.hasHr) {
       return { ...torrent, decision: "reject", score: 0, leftHours: left, reasons: ["HR 任务，新手期默认拒绝"] };
@@ -34,7 +49,11 @@ globalThis.PT_AGENT_DECISION = (() => {
 
     if (left !== null && left * 60 <= settings.guardMinutes) {
       reasons.push(`进入 ${settings.guardMinutes} 分钟保护窗口`);
-    } else if (left !== null && left < settings.minFreeHoursForAutoDownload) {
+    } else if (
+      left !== null &&
+      left < settings.minFreeHoursForAutoDownload &&
+      !scarceHighDemandOpportunity
+    ) {
       reasons.push(`Free 剩余不足 ${settings.minFreeHoursForAutoDownload} 小时`);
     }
 
@@ -44,9 +63,9 @@ globalThis.PT_AGENT_DECISION = (() => {
 
     if (seeders === 0) {
       reasons.push("当前 0 做种，无法保证完成下载");
-    } else if (seeders <= 2 && leechers >= 20) {
+    } else if (!scarceHighDemandOpportunity && seeders <= 2 && leechers >= 20) {
       reasons.push(`仅 ${seeders} 做种、${leechers} 下载，首发供给不足且竞争过高`);
-    } else if (seeders < 5 && demandRatio >= 8) {
+    } else if (!scarceHighDemandOpportunity && seeders < 5 && demandRatio >= 8) {
       reasons.push(`做种仅 ${seeders}，下载/做种比达到 ${demandRatio.toFixed(1)}，完成时间不稳定`);
     }
     if (leechers <= seeders) {
@@ -54,11 +73,25 @@ globalThis.PT_AGENT_DECISION = (() => {
     }
 
     if (reasons.length > 0) {
-      return { ...torrent, decision: "risk", score: 40, leftHours: left, reasons };
+      return {
+        ...torrent,
+        decision: "risk",
+        score: 40,
+        leftHours: left,
+        scarceHighDemandOpportunity,
+        requiredSpeedBps,
+        reasons
+      };
     }
 
     let score = 60;
     const scoreReasons = ["Free 截止时间明确"];
+    if (scarceHighDemandOpportunity) {
+      score += 25;
+      scoreReasons.push(
+        `低做种高需求机会：${seeders} 做种、${leechers} 下载，所需均速 ${(requiredSpeedBps / 1024).toFixed(0)}KiB/s`
+      );
+    }
     if (freeType.includes("2")) {
       score += 10;
       scoreReasons.push("2xFree 上传收益更高");
@@ -88,6 +121,8 @@ globalThis.PT_AGENT_DECISION = (() => {
       decision: "recommend",
       score: Math.min(100, score),
       leftHours: left,
+      scarceHighDemandOpportunity,
+      requiredSpeedBps,
       reasons: scoreReasons
     };
   };

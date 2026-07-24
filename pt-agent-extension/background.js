@@ -11,8 +11,14 @@ chrome.runtime.onInstalled.addListener(() => {
       minimumScore: 80,
       maxActiveDownloads: 3,
       minimumRatio: 1,
+      scarceOpportunityMaxSizeGB: 10,
+      scarceOpportunityMinFreeHours: 6,
+      scarceOpportunityMaxRequiredSpeedBps: 524288,
+      scarceOpportunityMinLeechers: 20,
+      scarceOpportunityMinDemandRatio: 10,
       guardMonitorEnabled: true,
       autoDeleteExpired: false,
+      guardExecutor: "core",
       rejectHr: true,
       rejectMissingFreeEnd: true,
       ...(stored.ptAgentSettings || {}),
@@ -30,6 +36,7 @@ chrome.runtime.onInstalled.addListener(() => {
     };
     updates.ptAgentCoreSettings = {
       address: stored.ptAgentCoreSettings?.address || privateConfig.coreServiceUrl,
+      apiToken: stored.ptAgentCoreSettings?.apiToken || privateConfig.coreApiToken || "",
       autoSync: stored.ptAgentCoreSettings?.autoSync ?? true
     };
     if (Object.keys(updates).length) chrome.storage.local.set(updates);
@@ -62,6 +69,7 @@ const runFreeGuard = async () => {
     guardMinutes: 10,
     guardMonitorEnabled: true,
     autoDeleteExpired: false,
+    guardExecutor: "core",
     ...(stored.ptAgentSettings || {})
   };
   if (!settings.guardMonitorEnabled) return;
@@ -107,7 +115,11 @@ const runFreeGuard = async () => {
           deleteFiles: false
         });
       }
-      if (settings.autoDeleteExpired && ["expiring", "expired"].includes(result.status)) {
+      if (
+        settings.guardExecutor === "extension" &&
+        settings.autoDeleteExpired &&
+        ["expiring", "expired"].includes(result.status)
+      ) {
         await client.deleteTorrents(torrent.hash, true);
         nextStates[torrent.hash] = "deleted";
         await appendAuditEvent({

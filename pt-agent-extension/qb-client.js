@@ -131,12 +131,17 @@ globalThis.PT_AGENT_QB = (() => {
   };
 
   const deadlineFromTags = (tags) => {
-    const match = String(tags || "").match(/\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}/);
-    return match ? match[0] : "";
+    const value = String(tags || "");
+    const isoMatch = value.match(/ptagent-free-end=([^,]+)/i);
+    if (isoMatch) return isoMatch[1].trim();
+    const legacyMatch = value.match(/\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}/);
+    return legacyMatch ? legacyMatch[0] : "";
   };
 
   const torrentTags = (deadline) => {
-    return ["ptagent", deadline].filter(Boolean).join(", ");
+    return ["ptagent", deadline ? `ptagent-free-end=${deadline}` : ""]
+      .filter(Boolean)
+      .join(", ");
   };
 
   const normalizeTorrentName = (value) => {

@@ -423,6 +423,21 @@ h2 {
   font-weight: 800;
 }
 
+.assessment-status.critical,
+.assessment-status.off_track,
+.assessment-status.expired {
+  color: #c2413b;
+}
+
+.assessment-status.at_risk {
+  color: #b7791f;
+}
+
+.assessment-status.on_track,
+.assessment-status.achieved {
+  color: #2f855a;
+}
+
 .assessment-progress {
   height: 7px;
   margin-top: 11px;

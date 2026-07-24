@@ -6,5 +6,6 @@ globalThis.PT_AGENT_PRIVATE_CONFIG = Object.freeze({
   mteamSiteUrl: "https://kp.m-team.cc/",
   mteamApiUrl: "https://api.m-team.cc/",
   mteamApiKey: "your_mteam_api_key",
-  coreServiceUrl: "http://127.0.0.1:8090/"
+  coreServiceUrl: "http://127.0.0.1:8090/",
+  coreApiToken: ""
 });

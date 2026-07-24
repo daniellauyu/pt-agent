@@ -36,14 +36,19 @@ test("logs in and sends a torrent URL with the Free deadline tag", async () => {
   await client.login();
   await client.addTorrent({
     url: "https://tracker.example/download/1",
-    tag: qb.torrentTags("2026-07-24 23:32:27")
+    tag: qb.torrentTags("2026-07-24 23:32:27"),
+    savePath: "/downloads/pt"
   });
 
   assert.equal(calls[0].url, "http://192.168.1.10:8080/api/v2/auth/login");
   assert.equal(calls[1].url, "http://192.168.1.10:8080/api/v2/torrents/add");
   assert.equal(calls[1].options.body.get("urls"), "https://tracker.example/download/1");
-  assert.equal(calls[1].options.body.get("tags"), "ptagent, 2026-07-24 23:32:27");
+  assert.equal(
+    calls[1].options.body.get("tags"),
+    "ptagent, ptagent-free-end=2026-07-24 23:32:27"
+  );
   assert.equal(calls[1].options.body.get("category"), "PT_AGENT");
+  assert.equal(calls[1].options.body.get("savepath"), "/downloads/pt");
 });
 
 test("extracts the Free deadline from qBittorrent tags", () => {
@@ -58,7 +63,15 @@ test("adds the fixed ptagent tag before the Free deadline", () => {
   const qb = loadClient();
   assert.equal(
     qb.torrentTags("2026-07-24 23:32:27"),
-    "ptagent, 2026-07-24 23:32:27"
+    "ptagent, ptagent-free-end=2026-07-24 23:32:27"
+  );
+});
+
+test("extracts an ISO 8601 deadline without dropping its offset", () => {
+  const qb = loadClient();
+  assert.equal(
+    qb.deadlineFromTags("ptagent, ptagent-free-end=2026-07-24T23:32:27+08:00"),
+    "2026-07-24T23:32:27+08:00"
   );
 });
 

@@ -56,3 +56,19 @@ test("does not admit a risk item even if all numeric limits pass", () => {
   assert.equal(result.allowed, false);
   assert.match(result.reasons[0], /未达到推荐级别/);
 });
+
+test("admits a short-Free scarce high-demand opportunity approved by the decision engine", () => {
+  const result = loadEngine().evaluate({
+    torrent: {
+      ...safeTorrent,
+      score: 85,
+      sizeBytes: 2.8 * 1024 ** 3,
+      leftHours: 11 + 53 / 60,
+      scarceHighDemandOpportunity: true
+    },
+    account: { ratio: 2 },
+    activeDownloads: 0
+  });
+  assert.equal(result.allowed, true);
+  assert.deepEqual(Array.from(result.reasons), []);
+});

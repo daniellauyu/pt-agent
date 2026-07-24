@@ -204,6 +204,10 @@
               <input id="coreServiceUrl" type="url" autocomplete="off">
             </label>
             <label>
+              <span>API Token（可选）</span>
+              <input id="coreApiToken" type="password" autocomplete="off">
+            </label>
+            <label>
               <input id="coreAutoSync" type="checkbox">
               <span>扫描后自动同步</span>
             </label>
@@ -213,7 +217,7 @@
           <div class="guard-settings">
             <div>
               <strong>Free Guard</strong>
-              <span>后台每分钟检查一次，仅管理带 ptagent 标签的未完成任务。</span>
+              <span>Core 为默认执行者；扩展仅在 Core 离线时提供只读预警。</span>
             </div>
             <label>
               <input id="guardMonitorEnabled" type="checkbox">
@@ -226,7 +230,7 @@
             </label>
             <label class="danger-switch">
               <input id="autoDeleteExpired" type="checkbox">
-              <span>进入保护窗口后自动删除任务和文件</span>
+              <span>旧版扩展执行器自动删除（Core 模式下忽略）</span>
             </label>
             <button id="saveGuardBtn" class="btn btn-quiet" type="button">保存保护设置</button>
           </div>

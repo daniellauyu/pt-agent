@@ -8,6 +8,7 @@ const state = {
   coreSettings: null,
   coreSyncing: false,
   coreSyncQueued: false,
+  corePrediction: null,
   qbSettings: null,
   qbTorrents: [],
   qbSeedingSummary: null,
@@ -24,8 +25,14 @@ const defaultSettings = {
   minimumScore: 80,
   maxActiveDownloads: 3,
   minimumRatio: 1,
+  scarceOpportunityMaxSizeGB: 10,
+  scarceOpportunityMinFreeHours: 6,
+  scarceOpportunityMaxRequiredSpeedBps: 512 * 1024,
+  scarceOpportunityMinLeechers: 20,
+  scarceOpportunityMinDemandRatio: 10,
   guardMonitorEnabled: true,
   autoDeleteExpired: false,
+  guardExecutor: "core",
   rejectHr: true,
   rejectMissingFreeEnd: true
 };
@@ -40,6 +47,7 @@ const defaultQbSettings = {
 
 const defaultCoreSettings = {
   address: globalThis.PT_AGENT_PRIVATE_CONFIG.coreServiceUrl,
+  apiToken: globalThis.PT_AGENT_PRIVATE_CONFIG.coreApiToken || "",
   autoSync: true
 };
 
@@ -119,6 +127,7 @@ const fillGuardSettingsForm = (settings) => {
   $("guardMonitorEnabled").checked = settings.guardMonitorEnabled !== false;
   $("guardMinutes").value = String(settings.guardMinutes || 10);
   $("autoDeleteExpired").checked = settings.autoDeleteExpired === true;
+  $("autoDeleteExpired").disabled = settings.guardExecutor !== "extension";
 };
 
 const saveGuardSettings = async () => {
@@ -128,7 +137,11 @@ const saveGuardSettings = async () => {
     guardMinutes: Math.max(1, Math.min(120, Number($("guardMinutes").value || 10))),
     autoDeleteExpired: $("autoDeleteExpired").checked
   };
-  if (next.autoDeleteExpired && !state.policySettings?.autoDeleteExpired) {
+  if (
+    next.guardExecutor === "extension" &&
+    next.autoDeleteExpired &&
+    !state.policySettings?.autoDeleteExpired
+  ) {
     const confirmed = confirm("开启后，带 ptagent 标签且未完成的任务进入保护窗口时，会从 qB 删除任务并同步删除文件。确定开启吗？");
     if (!confirmed) {
       $("autoDeleteExpired").checked = false;
@@ -138,7 +151,9 @@ const saveGuardSettings = async () => {
   state.policySettings = next;
   await chrome.storage.local.set({ ptAgentSettings: next });
   setQbMessage(
-    next.autoDeleteExpired
+    next.guardExecutor !== "extension"
+      ? "Free Guard 已保存：Core 是唯一删除执行者，扩展仅做只读预警。"
+      : next.autoDeleteExpired
       ? `Free Guard 已开启自动保护：到期前 ${next.guardMinutes} 分钟删除未完成任务和文件。`
       : `Free Guard 已保存：后台监控${next.guardMonitorEnabled ? "开启" : "关闭"}，自动删除关闭。`,
     "success"
@@ -172,6 +187,7 @@ const getCoreSettings = async () => {
 
 const fillCoreSettingsForm = (settings) => {
   $("coreServiceUrl").value = settings.address || "";
+  $("coreApiToken").value = settings.apiToken || "";
   $("coreAutoSync").checked = settings.autoSync !== false;
 };
 
@@ -184,6 +200,7 @@ const setCoreStatus = (text, type, detail = "") => {
 const saveCoreSettings = async ({ announce = true } = {}) => {
   const settings = {
     address: $("coreServiceUrl").value.trim(),
+    apiToken: $("coreApiToken").value,
     autoSync: $("coreAutoSync").checked
   };
   if (!/^https?:\/\//i.test(settings.address)) {
@@ -217,6 +234,21 @@ const syncToCore = async ({ silent = false } = {}) => {
       qbSeedingSummary: state.qbSeedingSummary,
       auditEvents: state.auditEvents
     });
+    if (result.predictionResult) {
+      state.corePrediction = result.predictionResult;
+      renderAccount();
+    }
+    const coreEvaluations = result.evaluationResult?.items || [];
+    if (coreEvaluations.length === state.evaluated.length) {
+      state.evaluated = state.evaluated.map((torrent, index) => ({
+        ...torrent,
+        decision: coreEvaluations[index].decision,
+        score: coreEvaluations[index].score,
+        reasons: coreEvaluations[index].reasons,
+        decisionSource: "core"
+      }));
+      renderList();
+    }
     const version = result.service?.version ? ` v${result.service.version}` : "";
     setCoreStatus(`Core 已连接${version}`, "ok");
     if (!silent) {
@@ -543,6 +575,13 @@ const isActiveDownload = (torrent) => {
 };
 
 const admissionFor = (torrent, batchQueued = 0, activeDownloadsOverride = null) => {
+  if (torrent?.decisionSource === "core") {
+    const allowed = torrent.decision === "recommend" && Number(torrent.score || 0) >= 80;
+    return {
+      allowed,
+      reasons: allowed ? [] : (torrent.reasons || ["Core 安全准入未通过"])
+    };
+  }
   return globalThis.PT_AGENT_ADMISSION.evaluate({
     torrent,
     account: state.scan?.account || {},
@@ -567,6 +606,7 @@ const guardPresentation = (result) => {
     expiring: "保护窗口",
     expired: "Free 已到期",
     missing_deadline: "缺少截止标签",
+    protected: "保护标签",
     completed: "已完成",
     unmanaged: "未托管"
   };
@@ -680,42 +720,95 @@ const testQbConnection = async () => {
   }
 };
 
-const pushTorrentToQb = async (torrent, { batchQueued = 0, activeDownloads = null } = {}) => {
+const enqueueTorrentDirectToQb = async (torrent, downloadUrl) => {
+  state.qbSettings = await saveQbSettings({ announce: false });
+  const client = createQbClient();
+  const savePath = state.qbSettings?.savePath || "";
+  await client.login();
+  await client.ensureCategory("PT_AGENT", savePath);
+  await client.addTorrent({
+    url: downloadUrl,
+    tag: globalThis.PT_AGENT_QB.torrentTags(torrent.freeEndAt || ""),
+    savePath,
+    category: "PT_AGENT"
+  });
+  return {
+    route: "qb_fallback",
+    evaluation: {
+      decision: torrent.decision,
+      score: Number(torrent.score || 0)
+    }
+  };
+};
+
+const enqueueTorrentViaCore = async (torrent, { manualOverride = false } = {}) => {
   const key = `${torrent.site}:${torrent.torrentId || torrent.rowIndex}`;
   state.qbPushStatus.set(key, "loading");
   renderList();
   try {
-    state.qbSettings = await saveQbSettings({ announce: false });
-    const admission = admissionFor(torrent, batchQueued, activeDownloads);
-    if (!admission.allowed) throw new Error(`安全准入未通过：${admission.reasons.join("；")}`);
-    if (!torrent.freeEndAt) throw new Error("缺少 Free 截止时间，未发送到 qBittorrent");
+    if (!torrent.freeEndAt && !manualOverride) {
+      throw new Error("缺少 Free 截止时间，未发送到 qBittorrent");
+    }
+    state.coreSettings = await saveCoreSettings({ announce: false });
     const downloadUrl = await resolveTorrentDownloadUrl(torrent);
-    const client = createQbClient();
-    await client.login();
-    await client.ensureCategory("PT_AGENT", state.qbSettings.savePath);
-    const deadline = globalThis.PT_AGENT_QB.deadlineTag(torrent.freeEndAt, formatDeadline);
-    const tag = globalThis.PT_AGENT_QB.torrentTags(deadline);
-    await client.addTorrent({
-      url: downloadUrl,
-      tag,
-      savePath: state.qbSettings.savePath,
-      category: "PT_AGENT"
-    });
+    const client = globalThis.PT_AGENT_CORE.createClient(state.coreSettings);
+    let route = "core";
+    let coreUnavailableReason = "";
+    let result;
+    try {
+      result = await client.enqueueTorrent({
+        scan: state.scan,
+        torrent,
+        downloadUrl,
+        savePath: state.qbSettings?.savePath || "",
+        manualOverride
+      });
+    } catch (error) {
+      if (error.code !== "CORE_UNAVAILABLE") throw error;
+      route = "qb_fallback";
+      coreUnavailableReason = error.message || String(error);
+      try {
+        result = await enqueueTorrentDirectToQb(torrent, downloadUrl);
+      } catch (qbError) {
+        throw new Error(
+          `Core 不可用（${coreUnavailableReason}）；插件直连 qB 失败：${qbError.message || String(qbError)}`
+        );
+      }
+    }
+    const deadline = torrent.freeEndAt;
+    const usedFallback = route === "qb_fallback";
     await appendAuditEvent({
-      action: "enqueue",
+      action: usedFallback
+        ? (manualOverride ? "enqueue_manual_override_qb_fallback" : "enqueue_qb_fallback")
+        : (manualOverride ? "enqueue_manual_override" : "enqueue"),
       status: "queued",
       title: torrent.title,
       site: torrent.site,
       torrentId: torrent.torrentId || "",
       deadline,
       progress: 0,
-      reason: `通过安全准入，分类 PT_AGENT，评分 ${torrent.score}`,
+      reason: usedFallback
+        ? `Core 不可用，Chrome 插件直连 qB；分类 PT_AGENT，评分 ${result.evaluation.score}`
+        : manualOverride
+          ? `用户手动覆盖 risk 准入，分类 PT_AGENT，评分 ${result.evaluation.score}`
+          : `通过 Core 安全准入，分类 PT_AGENT，评分 ${result.evaluation.score}`,
       deleteFiles: false
     }).catch(() => {});
     state.qbPushStatus.set(key, "success");
-    setQbStatus("已连接", "ok");
-    setQbMessage(`已发送：${torrent.title}；分类：PT_AGENT；标签：${tag}`, "success");
-    await refreshQbTorrents({ silent: true });
+    setCoreStatus(
+      usedFallback ? "Core 离线 · 插件直连 qB" : "Core 已连接",
+      usedFallback ? "bad" : "ok",
+      usedFallback ? coreUnavailableReason : ""
+    );
+    setQbMessage(
+      usedFallback
+        ? `已由 Chrome 插件直连 qB：${torrent.title}；分类：PT_AGENT`
+        : manualOverride
+        ? `已按你的判断手动发送：${torrent.title}；风险原因已记录`
+        : `已由 PT Core 安全发送：${torrent.title}；分类：PT_AGENT`,
+      "success"
+    );
+    setTimeout(() => refreshQbTorrents({ silent: true }), 1000);
     return true;
   } catch (error) {
     state.qbPushStatus.set(key, "error");
@@ -737,7 +830,7 @@ const pushTorrentToQb = async (torrent, { batchQueued = 0, activeDownloads = nul
   }
 };
 
-const pushRecommendedToQb = async () => {
+const pushRecommendedViaCore = async () => {
   const torrents = state.evaluated.filter((torrent) => torrent.decision === "recommend");
   if (!torrents.length) {
     setQbMessage("当前没有可一键下载的推荐资源。", "error");
@@ -745,20 +838,12 @@ const pushRecommendedToQb = async () => {
   }
   $("downloadRecommendedBtn").disabled = true;
   let succeeded = 0;
-  let attempted = 0;
-  const initialActiveDownloads = state.qbTorrents.filter(isActiveDownload).length;
   for (const torrent of torrents) {
-    const admission = admissionFor(torrent, succeeded, initialActiveDownloads);
-    if (!admission.allowed) continue;
-    attempted += 1;
-    if (await pushTorrentToQb(torrent, {
-      batchQueued: succeeded,
-      activeDownloads: initialActiveDownloads
-    })) succeeded += 1;
+    if (await enqueueTorrentViaCore(torrent)) succeeded += 1;
   }
   $("downloadRecommendedBtn").disabled = false;
   setQbMessage(
-    `批量准入 ${attempted} 个：成功 ${succeeded}，失败 ${attempted - succeeded}，安全策略拦截 ${torrents.length - attempted}。`,
+    `批量提交 ${torrents.length} 个：成功 ${succeeded}，拒绝或失败 ${torrents.length - succeeded}。`,
     succeeded ? "success" : "error"
   );
 };
@@ -793,29 +878,100 @@ const renderAccount = () => {
   $("bonusFormulaNote").textContent = account.source === "mteam-api"
     ? `qB 全库统计包含所有已完成的 M-Team 任务；站点当前实际认可 ${account.trackerSeedingCount} 个、${formatBytes(account.trackerSeedingSizeBytes)}，魔力产出以 Tracker 返回值为准。`
     : "";
-  const assessment = globalThis.PT_AGENT_ASSESSMENT.calculate({
+  const fallbackAssessment = globalThis.PT_AGENT_ASSESSMENT.calculate({
     bonus: account.bonus,
     bonusPerHour: account.bonusPerHour,
     createdDate: account.createdDate,
+    uploadedBytes: account.uploadedBytes,
+    downloadedBytes: account.downloadedBytes,
+    seedingCount: account.trackerSeedingCount,
+    seedingSizeBytes: account.trackerSeedingSizeBytes,
     target: 6000,
     assessmentDays: 30
   });
+  const corePrediction = state.corePrediction;
+  const assessment = corePrediction ? {
+    target: corePrediction.targets.bonus_points,
+    current: corePrediction.current.bonus_points,
+    remaining: corePrediction.remaining.bonus_points,
+    progress: corePrediction.progress_percent,
+    rate: corePrediction.current.bonus_per_hour,
+    deadlineAt: corePrediction.estimated_deadline
+      ? Date.parse(corePrediction.estimated_deadline)
+      : null,
+    hoursLeft: corePrediction.hours_left,
+    requiredRate: corePrediction.required_bonus_per_hour,
+    etaHours: corePrediction.estimated_completion_at && corePrediction.hours_left !== null
+      ? Math.max(
+        0,
+        (Date.parse(corePrediction.estimated_completion_at) - Date.now()) / 3600000
+      )
+      : Infinity,
+    projectedAtDeadline: corePrediction.projected_bonus_at_deadline,
+    safetyMarginHours: corePrediction.safety_margin_hours,
+    status: corePrediction.assessment_status,
+    remainingUploadedBytes: corePrediction.remaining.uploaded_bytes,
+    remainingDownloadedBytes: corePrediction.remaining.downloaded_bytes,
+    seedingCount: corePrediction.current.seed_count,
+    seedingSizeBytes: corePrediction.current.seed_size_bytes,
+    recommendedPlan: {
+      bufferDays: corePrediction.recommended_plan.buffer_days,
+      targetRate: corePrediction.recommended_plan.target_bonus_per_hour,
+      additionalRate: corePrediction.recommended_plan.additional_bonus_per_hour,
+      estimatedAdditionalSeedBytesLow:
+        corePrediction.recommended_plan.estimated_additional_seed_bytes_low,
+      estimatedAdditionalSeedBytesHigh:
+        corePrediction.recommended_plan.estimated_additional_seed_bytes_high,
+      estimatedTargetSeedSizeBytes:
+        corePrediction.recommended_plan.estimated_target_seed_size_bytes
+    },
+    achieved: corePrediction.achieved
+  } : fallbackAssessment;
   const etaDays = Number.isFinite(assessment.etaHours) ? `${(assessment.etaHours / 24).toFixed(1)} 天` : "无法估算";
   const requiredRate = Number.isFinite(assessment.requiredRate) ? `${assessment.requiredRate.toFixed(2)}/h` : "已超过估算期限";
-  const multiplier = Number.isFinite(assessment.rateMultiplier) ? `${assessment.rateMultiplier.toFixed(1)} 倍` : "无法估算";
+  const recommendedPlan = assessment.recommendedPlan || {};
+  const safeTargetRate = Number.isFinite(recommendedPlan.targetRate)
+    ? `${recommendedPlan.targetRate.toFixed(2)}/h`
+    : "无法估算";
+  const additionalRate = Number.isFinite(recommendedPlan.additionalRate)
+    ? `${recommendedPlan.additionalRate.toFixed(2)}/h`
+    : "无法估算";
   const deadline = assessment.deadlineAt
     ? formatDeadline(new Date(assessment.deadlineAt).toISOString())
     : "以站内通知为准";
   const queuedShare = qbSeeding?.count > 0 ? qbSeeding.queuedCount / qbSeeding.count : 0;
-  const estimatedEffectiveSize = Number(account.trackerSeedingSizeBytes) > 0
-    && Number.isFinite(assessment.rateMultiplier)
-    ? Number(account.trackerSeedingSizeBytes) * Math.max(1, assessment.rateMultiplier)
-    : 0;
+  const currentTrackerSize = Number(assessment.seedingSizeBytes || 0);
+  const estimatedTargetSize = Number(recommendedPlan.estimatedTargetSeedSizeBytes);
+  const estimatedLow = Number(recommendedPlan.estimatedAdditionalSeedBytesLow);
+  const estimatedHigh = Number(recommendedPlan.estimatedAdditionalSeedBytesHigh);
   const seedingScale = queuedShare >= 0.5
     ? `先激活现有 ${formatBytes(qbSeeding.sizeBytes)}`
-    : estimatedEffectiveSize > 0
-      ? `粗估 ${formatBytes(estimatedEffectiveSize)}`
-      : "需用实际产出反推";
+    : Number.isFinite(estimatedTargetSize) && estimatedTargetSize > 0
+      ? formatBytes(estimatedTargetSize)
+      : "需先建立效率基准";
+  const additionalSeedSize = Number.isFinite(estimatedLow) && Number.isFinite(estimatedHigh)
+    ? estimatedHigh > 0
+      ? `${formatBytes(estimatedLow)}～${formatBytes(estimatedHigh)}`
+      : "无需新增"
+    : "无法估算";
+  const safetyMargin = Number.isFinite(assessment.safetyMarginHours)
+    ? assessment.safetyMarginHours >= 0
+      ? `${(assessment.safetyMarginHours / 24).toFixed(1)} 天`
+      : `落后 ${Math.abs(assessment.safetyMarginHours / 24).toFixed(1)} 天`
+    : "无法估算";
+  const projectedBonus = Number.isFinite(assessment.projectedAtDeadline)
+    ? assessment.projectedAtDeadline.toFixed(0)
+    : "无法估算";
+  const statusLabels = {
+    achieved: "已完成",
+    on_track: "进度安全",
+    at_risk: "余量偏低",
+    critical: "临界危险",
+    off_track: "当前无法完成",
+    expired: "已过期",
+    unknown: "信息不足"
+  };
+  const statusLabel = statusLabels[assessment.status] || assessment.status;
   const queueWarning = qbSeeding?.queuedCount
     ? `qB 有 ${qbSeeding.queuedCount} 个已完成 M-Team 任务处于 queuedUP，当前活跃做种仅 ${qbSeeding.activeCount} 个；应先处理上传队列，让任务实际向 Tracker 汇报。`
     : `qB 当前活跃 M-Team 做种 ${qbSeeding?.activeCount ?? "-"} 个。`;
@@ -825,20 +981,27 @@ const renderAccount = () => {
         <div class="panel-kicker">NEW USER ASSESSMENT</div>
         <strong>新手考核 · 6000 魔力</strong>
       </div>
-      <span>${assessment.progress.toFixed(1)}%</span>
+      <span class="assessment-status ${escapeHtml(assessment.status)}">${escapeHtml(statusLabel)} · ${assessment.progress.toFixed(1)}%</span>
     </div>
     <div class="assessment-progress"><i style="width:${assessment.progress.toFixed(1)}%"></i></div>
     <div class="assessment-metrics">
       <div><span>当前 / 目标</span><b>${assessment.current.toFixed(1)} / 6000</b></div>
-      <div><span>还差</span><b>${assessment.remaining.toFixed(1)}</b></div>
+      <div><span>魔力还差</span><b>${assessment.remaining.toFixed(1)}</b></div>
+      <div><span>上传还差</span><b>${assessment.remainingUploadedBytes > 0 ? formatBytes(assessment.remainingUploadedBytes) : "已达标"}</b></div>
+      <div><span>下载还差</span><b>${assessment.remainingDownloadedBytes > 0 ? formatBytes(assessment.remainingDownloadedBytes) : "已达标"}</b></div>
       <div><span>当前产出</span><b>${assessment.rate.toFixed(3)}/h</b></div>
-      <div><span>按 30 天所需</span><b>${requiredRate}</b></div>
-      <div><span>产出需提升</span><b>${multiplier}</b></div>
-      <div><span>所需做种规模</span><b>${seedingScale}</b></div>
+      <div><span>截止底线</span><b>${requiredRate}</b></div>
+      <div><span>提前 5 天目标</span><b>${safeTargetRate}</b></div>
+      <div><span>还需提升</span><b>${additionalRate}</b></div>
+      <div><span>Tracker 认可做种</span><b>${assessment.seedingCount} 个 · ${formatBytes(currentTrackerSize)}</b></div>
+      <div><span>建议总做种规模</span><b>${seedingScale}</b></div>
+      <div><span>预计还需新增</span><b>${additionalSeedSize}</b></div>
+      <div><span>当前安全余量</span><b>${safetyMargin}</b></div>
+      <div><span>截止预计魔力</span><b>${projectedBonus}</b></div>
       <div><span>当前速度预计</span><b>${etaDays}</b></div>
       <div><span>30 天估算截止</span><b>${deadline}</b></div>
     </div>
-    <div class="assessment-advice">${escapeHtml(queueWarning)} 容量只是按当前魔力效率做的线性粗估，实际公式还受种子存活时间、体积和同种人数影响；考核截止时间和最终数据以 M-Team 站内通知为准。</div>
+    <div class="assessment-advice">${escapeHtml(queueWarning)} 新手期按原始做种魔力估算；建议容量区间按当前 Tracker 效率计算，并用 2 倍作为保守上限。实际结果还受种龄、体积和同种人数影响，最终以 M-Team 站内通知为准。</div>
   `;
 };
 
@@ -878,7 +1041,14 @@ const renderList = () => {
   renderSiteStatus();
 
   const list = $("list");
-  const rows = state.evaluated.filter((item) => state.filter === "all" || item.decision === state.filter);
+  const freeRemainingSortValue = (item) => {
+    if (item.leftHours === null || item.leftHours === undefined) return -Infinity;
+    const value = Number(item.leftHours);
+    return Number.isFinite(value) ? value : -Infinity;
+  };
+  const rows = state.evaluated
+    .filter((item) => state.filter === "all" || item.decision === state.filter)
+    .sort((a, b) => freeRemainingSortValue(b) - freeRemainingSortValue(a));
 
   if (!rows.length) {
     list.innerHTML = `<div class="empty">当前筛选没有资源。</div>`;
@@ -905,15 +1075,16 @@ const renderList = () => {
     const qbPushStatus = state.qbPushStatus.get(qbKey);
     const resourceStatus = qbResourceStatus(item);
     const admission = admissionFor(item);
+    const policyBlocked = item.decision === "reject";
     const qbLabel =
       qbPushStatus === "loading" ? "发送中…" :
       resourceStatus === "downloaded" ? "已下载" :
       resourceStatus === "downloading" ? "下载中" :
       qbPushStatus === "success" ? "已发送" :
       qbPushStatus === "error" ? "重试下载" :
-      !admission.allowed ? "安全策略拦截" :
+      policyBlocked ? "安全策略拦截" :
       "一键下载";
-    const qbAction = `<button class="row-action qb-download-button ${resourceStatus || (qbPushStatus === "success" ? "sent" : "")}" type="button" data-row-index="${item.rowIndex}" title="${escapeHtml(admission.reasons.join("；"))}" ${qbPushStatus === "loading" || resourceStatus || !admission.allowed ? "disabled" : ""}>${qbLabel}</button>`;
+    const qbAction = `<button class="row-action qb-download-button ${resourceStatus || (qbPushStatus === "success" ? "sent" : "")}" type="button" data-row-index="${item.rowIndex}" title="${escapeHtml(admission.reasons.join("；"))}" ${qbPushStatus === "loading" || resourceStatus || policyBlocked ? "disabled" : ""}>${qbLabel}</button>`;
     return `
       <article class="card">
         <div class="resource-main">
@@ -958,7 +1129,9 @@ const renderList = () => {
     button.addEventListener("click", () => {
       const rowIndex = Number(button.dataset.rowIndex);
       const torrent = state.evaluated.find((item) => item.rowIndex === rowIndex);
-      if (torrent) pushTorrentToQb(torrent);
+      if (!torrent) return;
+      const manualOverride = torrent.decision === "risk";
+      enqueueTorrentViaCore(torrent, { manualOverride });
     });
   });
 };
@@ -1168,7 +1341,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   });
   $("coreSyncBtn").addEventListener("click", () => syncToCore());
-  $("downloadRecommendedBtn").addEventListener("click", pushRecommendedToQb);
+  $("downloadRecommendedBtn").addEventListener("click", pushRecommendedViaCore);
   $("copyBtn").addEventListener("click", copyJson);
   $("downloadBtn").addEventListener("click", downloadJson);
   $("exportAuditBtn").addEventListener("click", exportAuditJson);

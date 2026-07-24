@@ -71,11 +71,23 @@ test("fills previously empty stored credentials from the local preset", () => {
   assert.match(script, /mteamApiKey:\s*stored\.mteamApiKey \|\| defaultQbSettings\.mteamApiKey/);
 });
 
-test("resource buttons distinguish qB downloading and downloaded tasks", () => {
+test("resource buttons keep one-click download for risk but keep rejects blocked", () => {
   const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
   assert.match(script, /resourceStatus === "downloaded" \? "已下载"/);
   assert.match(script, /resourceStatus === "downloading" \? "下载中"/);
-  assert.match(script, /qbPushStatus === "loading" \|\| resourceStatus \|\| !admission\.allowed \? "disabled"/);
+  assert.match(script, /policyBlocked \? "安全策略拦截"/);
+  assert.match(script, /qbPushStatus === "loading" \|\| resourceStatus \|\| policyBlocked \? "disabled"/);
+  assert.doesNotMatch(script, /手动下载（风险）/);
+  assert.doesNotMatch(script, /globalThis\.confirm/);
+});
+
+test("sorts resources by Free remaining time descending with missing deadlines last", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  assert.match(script, /return -Infinity/);
+  assert.match(
+    script,
+    /\.sort\(\(a, b\) => freeRemainingSortValue\(b\) - freeRemainingSortValue\(a\)\)/
+  );
 });
 
 test("loads the recommendation engine before the popup logic", () => {
@@ -93,8 +105,11 @@ test("loads and renders the 6000-magic newbie assessment estimator", () => {
   );
   assert.match(script, /target:\s*6000/);
   assert.match(script, /assessmentDays:\s*30/);
-  assert.match(script, /按 30 天所需/);
-  assert.match(script, /所需做种规模/);
+  assert.match(script, /上传还差/);
+  assert.match(script, /下载还差/);
+  assert.match(script, /提前 5 天目标/);
+  assert.match(script, /预计还需新增/);
+  assert.match(script, /建议总做种规模/);
   assert.match(script, /先激活现有/);
   assert.match(script, /queuedUP/);
 });
@@ -116,13 +131,16 @@ test("syncs scan, qB seeding summary, and audit events to PT Core", () => {
   assert.match(script, /state\.coreSettings\?\.autoSync/);
 });
 
-test("uses one safety gate for single and batch qB pushes and assigns PT_AGENT category", () => {
+test("prefers Core and falls back to direct qB when Core is unavailable", () => {
   const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
-  assert.match(script, /const admissionFor =/);
-  assert.match(script, /const admission = admissionFor\(torrent,\s*batchQueued,\s*activeDownloads\)/);
-  assert.match(script, /initialActiveDownloads/);
-  assert.match(script, /category:\s*"PT_AGENT"/);
-  assert.match(script, /安全策略拦截/);
+  assert.match(script, /const pushRecommendedViaCore =/);
+  assert.match(script, /PT_AGENT_CORE\.createClient\(state\.coreSettings\)/);
+  assert.match(script, /client\.enqueueTorrent\(/);
+  assert.match(script, /error\.code !== "CORE_UNAVAILABLE"/);
+  assert.match(script, /client\.ensureCategory\("PT_AGENT", savePath\)/);
+  assert.match(script, /PT_AGENT_QB\.torrentTags\(torrent\.freeEndAt \|\| ""\)/);
+  assert.match(script, /client\.addTorrent\(\{/);
+  assert.match(script, /enqueue_qb_fallback/);
 });
 
 test("loads the M-Team historical backfill helper before the popup logic", () => {

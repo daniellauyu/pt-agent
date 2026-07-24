@@ -8,6 +8,7 @@ globalThis.PT_AGENT_CORE = (() => {
         {
           headers: {
             "Content-Type": "application/json",
+            ...(settings.apiToken ? { "X-PT-Agent-Token": settings.apiToken } : {}),
             ...(options.headers || {})
           },
           ...options
@@ -47,8 +48,12 @@ globalThis.PT_AGENT_CORE = (() => {
           ratio: Number.isFinite(Number(account?.ratio)) ? Number(account.ratio) : null,
           bonus: Number(account?.bonus || 0),
           bonusPerHour: Number(account?.bonusPerHour || 0),
-          seedingCount: Number(qbSeedingSummary?.count ?? account?.seedingCount ?? 0),
-          seedingSizeBytes: Number(qbSeedingSummary?.sizeBytes ?? account?.seedingSizeBytes ?? 0)
+          seedingCount: Number(
+            account?.trackerSeedingCount ?? account?.seedingCount ?? qbSeedingSummary?.count ?? 0
+          ),
+          seedingSizeBytes: Number(
+            account?.trackerSeedingSizeBytes ?? account?.seedingSizeBytes ?? qbSeedingSummary?.sizeBytes ?? 0
+          )
         })
       });
     };
@@ -61,12 +66,59 @@ globalThis.PT_AGENT_CORE = (() => {
       })
     });
 
+    const novicePrediction = () => request("/api/account/novice-prediction");
+
+    const evaluateTorrent = (torrentId) => request(`/api/torrents/${torrentId}/evaluate`, {
+      method: "POST",
+      body: "{}"
+    });
+
+    const evaluateTorrents = (torrentIds) => request("/api/torrents/evaluate-batch", {
+      method: "POST",
+      body: JSON.stringify({ torrent_ids: torrentIds })
+    });
+
+    const enqueueTorrent = async ({
+      scan,
+      torrent,
+      downloadUrl,
+      savePath = "",
+      manualOverride = false
+    }) => {
+      try {
+        await health();
+      } catch (error) {
+        const unavailable = new Error(error.message || String(error));
+        unavailable.code = "CORE_UNAVAILABLE";
+        unavailable.cause = error;
+        throw unavailable;
+      }
+      const imported = await importTorrents({ scan, torrents: [torrent] });
+      const torrentId = imported?.torrent_ids?.[0];
+      if (!torrentId) throw new Error("PT Core 未返回资源 ID");
+      const evaluation = await evaluateTorrent(torrentId);
+      const automaticAllowed =
+        evaluation.decision === "recommend" && Number(evaluation.score || 0) >= 80;
+      const manualAllowed = manualOverride && evaluation.decision === "risk";
+      if ((!manualOverride && !automaticAllowed) || (manualOverride && !manualAllowed)) {
+        throw new Error(`Core 安全准入未通过：${(evaluation.reasons || []).join("；")}`);
+      }
+      const task = await request("/api/tasks", {
+        method: "POST",
+        body: JSON.stringify({
+          torrent_id: torrentId,
+          download_url: downloadUrl,
+          save_path: savePath || null,
+          admission_mode: manualOverride ? "manual_override" : "automatic"
+        })
+      });
+      return { imported, evaluation, task };
+    };
+
     const sync = async ({ scan, torrents, qbSeedingSummary, auditEvents }) => {
       const service = await health();
-      const tasks = [
-        importTorrents({ scan, torrents }),
-        importAudit(auditEvents)
-      ];
+      const torrentResult = await importTorrents({ scan, torrents });
+      const tasks = [importAudit(auditEvents)];
       if (scan?.account && Object.keys(scan.account).length) {
         tasks.push(createAccountSnapshot({
           account: scan.account,
@@ -74,15 +126,30 @@ globalThis.PT_AGENT_CORE = (() => {
           capturedAt: scan?.page?.scannedAt
         }));
       }
-      const [torrentResult, auditResult, accountResult = null] = await Promise.all(tasks);
-      return { service, torrentResult, auditResult, accountResult };
+      const [auditResult, accountResult = null] = await Promise.all(tasks);
+      const predictionResult = accountResult ? await novicePrediction() : null;
+      const evaluationResult = torrentResult.torrent_ids?.length
+        ? await evaluateTorrents(torrentResult.torrent_ids)
+        : { items: [], total: 0 };
+      return {
+        service,
+        torrentResult,
+        auditResult,
+        accountResult,
+        predictionResult,
+        evaluationResult
+      };
     };
 
     return {
       createAccountSnapshot,
+      enqueueTorrent,
+      evaluateTorrent,
+      evaluateTorrents,
       health,
       importAudit,
       importTorrents,
+      novicePrediction,
       sync
     };
   };

@@ -45,3 +45,19 @@ test("distinguishes completed, expiring, expired, missing, and unmanaged tasks",
   assert.equal(guard.evaluate({ ...torrent, tags: "ptagent" }, { nowMs }).status, "missing_deadline");
   assert.equal(guard.evaluate({ ...torrent, tags: "other" }, { nowMs }).status, "unmanaged");
 });
+
+test("parses offset-aware deadlines and honors delete protection tags", () => {
+  const guard = loadEngine();
+  const deadline = "2026-07-24T23:32:27+08:00";
+  assert.equal(
+    guard.deadlineFromTags(`ptagent, ptagent-free-end=${deadline}`),
+    deadline
+  );
+  const result = guard.evaluate({
+    tags: `ptagent, PT_AGENT_NODEL, ptagent-free-end=${deadline}`,
+    progress: 0.5,
+    amount_left: 1024,
+    dlspeed: 0
+  });
+  assert.equal(result.status, "protected");
+});

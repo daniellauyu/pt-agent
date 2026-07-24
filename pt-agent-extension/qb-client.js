@@ -41,9 +41,14 @@ globalThis.PT_AGENT_QB = (() => {
       return (await response.text()).trim();
     };
 
-    const addTorrent = async ({ url, tag, savePath = "", category = "PT_AGENT" }) => {
+    const addTorrent = async ({ url, file, filename = "download.torrent", tag, savePath = "", category = "PT_AGENT" }) => {
       const body = new FormData();
-      body.set("urls", url);
+      // 优先上传 .torrent 文件字节（插件在浏览器侧已鉴权取到），避免 qB 服务器端去抓 M-Team 链接失败而静默丢弃。
+      if (file) {
+        body.append("torrents", file, filename);
+      } else {
+        body.set("urls", url);
+      }
       if (tag) body.set("tags", tag);
       if (savePath) body.set("savepath", savePath);
       if (category) body.set("category", category);

@@ -11,6 +11,7 @@ const loadClient = () => {
     URL,
     URLSearchParams,
     FormData,
+    Blob,
     globalThis: null
   });
   context.globalThis = context;
@@ -49,6 +50,38 @@ test("logs in and sends a torrent URL with the Free deadline tag", async () => {
   );
   assert.equal(calls[1].options.body.get("category"), "PT_AGENT");
   assert.equal(calls[1].options.body.get("savepath"), "/downloads/pt");
+});
+
+test("uploads the .torrent file bytes instead of a URL when a file is provided", async () => {
+  const calls = [];
+  const fetchMock = async (url, options = {}) => {
+    calls.push({ url, options });
+    if (url.endsWith("/auth/login")) return new Response("Ok.");
+    if (url.endsWith("/torrents/add")) return new Response("Ok.");
+    throw new Error(`Unexpected URL: ${url}`);
+  };
+  const qb = loadClient();
+  const client = qb.createClient({
+    address: "http://192.168.1.10:8080/",
+    username: "admin",
+    password: "secret"
+  }, fetchMock);
+
+  await client.login();
+  await client.addTorrent({
+    url: "https://api.m-team.cc/token/should-not-be-used",
+    file: new Blob([new Uint8Array([100, 51, 58])], { type: "application/x-bittorrent" }),
+    filename: "movie.torrent",
+    tag: qb.torrentTags("2026-07-24 23:32:27"),
+    savePath: "/downloads/pt"
+  });
+
+  const addBody = calls[1].options.body;
+  assert.equal(calls[1].url, "http://192.168.1.10:8080/api/v2/torrents/add");
+  assert.ok(addBody.get("torrents"), "must upload the torrent file bytes");
+  assert.equal(addBody.get("urls"), null, "must not fall back to the M-Team URL when a file is present");
+  assert.equal(addBody.get("category"), "PT_AGENT");
+  assert.equal(addBody.get("savepath"), "/downloads/pt");
 });
 
 test("extracts the Free deadline from qBittorrent tags", () => {

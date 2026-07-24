@@ -619,19 +619,46 @@ const testQbConnection = async () => {
   }
 };
 
+// 在浏览器侧抓取 .torrent 文件字节（插件有 M-Team 权限与用户会话），失败则返回 null 由调用方回退。
+const fetchTorrentFile = async (downloadUrl) => {
+  try {
+    const response = await fetch(downloadUrl, { credentials: "omit" });
+    debug("qb:torrent-fetch", { ok: response.ok, status: response.status, type: response.headers.get("content-type") });
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    // 校验确实是种子文件：bittorrent 内容类型或 bencode 起始 "d..." 或大小合理。
+    const contentType = (response.headers.get("content-type") || "").toLowerCase();
+    if (contentType.includes("html") || blob.size < 40) {
+      debug("qb:torrent-fetch-suspect", { size: blob.size, contentType });
+      return null;
+    }
+    return blob;
+  } catch (error) {
+    debug("qb:torrent-fetch-error", String(error?.message || error));
+    return null;
+  }
+};
+
 const enqueueTorrentDirectToQb = async (torrent, downloadUrl) => {
   state.qbSettings = await saveQbSettings({ announce: false });
   const client = createQbClient();
   const savePath = state.qbSettings?.savePath || "";
   await client.login();
   await client.ensureCategory("PT_AGENT", savePath);
+  const tag = globalThis.PT_AGENT_QB.torrentTags(torrent.freeEndAt || "");
+  const file = await fetchTorrentFile(downloadUrl);
+  const safeName = String(torrent.title || torrent.torrentId || "download").replace(/[^\w.-]+/g, "_").slice(0, 80);
+  debug("qb:add", { route: file ? "file-upload" : "url", size: file?.size || 0, title: torrent.title });
   await client.addTorrent({
     url: downloadUrl,
-    tag: globalThis.PT_AGENT_QB.torrentTags(torrent.freeEndAt || ""),
+    file,
+    filename: `${safeName}.torrent`,
+    tag,
     savePath,
     category: "PT_AGENT"
   });
   return {
+    route: file ? "file" : "url",
     evaluation: {
       decision: torrent.decision,
       score: Number(torrent.score || 0)

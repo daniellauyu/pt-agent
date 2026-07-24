@@ -1,0 +1,271 @@
+<!doctype html>
+<html lang="zh-CN" class="mode-popup">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="popup.css">
+  <title>PT Agent Helper</title>
+</head>
+<body class="mode-popup">
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">PT</span>
+        <div>
+          <strong>PT Agent</strong>
+          <span>下载工作台</span>
+        </div>
+      </div>
+      <nav class="nav">
+        <button id="resourcesNav" class="nav-item active" type="button" data-view="resources">
+          <span class="nav-icon">⌁</span>
+          种子决策
+        </button>
+        <button id="downloadsNav" class="nav-item" type="button" data-view="downloads">
+          <span class="nav-icon">↓</span>
+          下载中
+        </button>
+        <div class="nav-label">当前站点</div>
+        <div class="sidebar-site">
+          <span class="site-dot"></span>
+          <div>
+            <strong id="sidebarSiteName">等待扫描</strong>
+            <span id="sidebarSiteMode">尚未连接来源页</span>
+          </div>
+        </div>
+      </nav>
+      <div class="sidebar-foot">
+        <span>安全策略已启用</span>
+        <small>Free 到期保护 · HR 拦截</small>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">TORRENT WORKSPACE</div>
+          <h1>种子下载决策</h1>
+          <p id="pageInfo">等待扫描来源页面</p>
+        </div>
+        <div class="topbar-actions">
+          <span id="coreStatus" class="site-status bad">Core 离线</span>
+          <button id="coreSyncBtn" class="btn btn-quiet" type="button">同步 Core</button>
+          <button id="sourceBtn" class="btn btn-quiet" type="button">打开 M-Team</button>
+          <button id="fullscreenBtn" class="btn btn-quiet" type="button">新标签页打开</button>
+          <button id="scanBtn" class="btn btn-primary" type="button">
+            <span>↻</span> 重新扫描
+          </button>
+        </div>
+      </header>
+
+      <main class="content">
+        <div class="view-switcher" aria-label="页面菜单">
+          <button class="view-switch active" type="button" data-view="resources">可下载资源</button>
+          <button class="view-switch" type="button" data-view="downloads">下载中</button>
+        </div>
+
+        <div id="resourcesView" class="workspace-view active" data-view-panel="resources">
+        <section class="overview-grid">
+          <div class="account panel" id="accountPanel">
+            <div class="panel-kicker">账号概况</div>
+            <div class="metric-row">
+              <div class="metric">
+                <span>分享率</span>
+                <strong id="ratio">-</strong>
+              </div>
+              <div class="metric">
+                <span>上传量</span>
+                <strong id="uploaded">-</strong>
+              </div>
+              <div class="metric">
+                <span>下载量</span>
+                <strong id="downloaded">-</strong>
+              </div>
+              <div class="metric">
+                <span>当前魔力</span>
+                <strong id="bonus">-</strong>
+              </div>
+              <div class="metric">
+                <span>站点魔力/小时</span>
+                <strong id="bonusPerHour">-</strong>
+              </div>
+              <div class="metric">
+                <span>qB M-Team 做种数</span>
+                <strong id="seedingCount">-</strong>
+              </div>
+              <div class="metric">
+                <span>qB M-Team 做种容量</span>
+                <strong id="seedingSize">-</strong>
+              </div>
+            </div>
+            <div id="bonusFormulaNote" class="metric-note"></div>
+            <div id="newbieAssessment" class="assessment-card"></div>
+          </div>
+
+          <section class="site-panel panel">
+            <div class="site-head">
+              <div>
+                <div class="panel-kicker">站点解析状态</div>
+                <div class="site-name" id="siteName">站点检测</div>
+                <div class="site-warnings" id="siteWarnings"></div>
+              </div>
+              <span id="siteStatus" class="site-status bad">未扫描</span>
+            </div>
+            <div class="site-fields" id="siteFields"></div>
+          </section>
+        </section>
+
+        <section class="resource-panel panel">
+          <div class="resource-head">
+            <div>
+              <div class="panel-kicker">扫描结果</div>
+              <h2>可下载资源</h2>
+            </div>
+            <div class="export-actions">
+              <button id="downloadRecommendedBtn" class="btn btn-primary" type="button">一键下载推荐</button>
+              <button id="copyBtn" class="btn btn-quiet" type="button">复制 JSON</button>
+              <button id="downloadBtn" class="btn btn-quiet" type="button">导出 JSON</button>
+            </div>
+          </div>
+
+          <div class="toolbar">
+            <button class="tab active" data-filter="all">全部 <b id="countAll">0</b></button>
+            <button class="tab" data-filter="recommend">推荐 <b id="countRecommend">0</b></button>
+            <button class="tab" data-filter="risk">风险 <b id="countRisk">0</b></button>
+            <button class="tab" data-filter="reject">拒绝 <b id="countReject">0</b></button>
+          </div>
+
+          <div class="table-header" aria-hidden="true">
+            <span>资源</span>
+            <span>决策</span>
+            <span>大小</span>
+            <span>做种 / 下载</span>
+            <span>Free 剩余</span>
+            <span>Free 截止时间</span>
+            <span>发布时间</span>
+            <span>操作</span>
+          </div>
+
+          <div id="list" class="list">
+            <div class="empty">点击右上角扫描来源 PT 页面。</div>
+          </div>
+        </section>
+        </div>
+
+        <div id="downloadsView" class="workspace-view" data-view-panel="downloads">
+        <section id="downloaderPanel" class="downloader-panel panel">
+          <div class="resource-head">
+            <div>
+              <div class="panel-kicker">MY DOWNLOADER</div>
+              <h2>下载中</h2>
+            </div>
+            <div class="export-actions">
+              <span id="qbStatus" class="site-status bad">未连接</span>
+              <button id="testQbBtn" class="btn btn-quiet" type="button">测试连接</button>
+              <button id="backfillDeadlineBtn" class="btn btn-quiet" type="button">回填下载中截止</button>
+              <button id="refreshQbBtn" class="btn btn-quiet" type="button">刷新任务</button>
+            </div>
+          </div>
+
+          <div class="downloader-settings">
+            <label>
+              <span>qB 地址</span>
+              <input id="qbAddress" type="url" autocomplete="off">
+            </label>
+            <label>
+              <span>账号</span>
+              <input id="qbUsername" type="text" autocomplete="username">
+            </label>
+            <label>
+              <span>密码</span>
+              <input id="qbPassword" type="password" autocomplete="current-password" placeholder="首次使用请输入">
+            </label>
+            <label>
+              <span>下载目录（可选）</span>
+              <input id="qbSavePath" type="text" autocomplete="off" placeholder="使用 qB 默认目录">
+            </label>
+            <label class="api-key-field">
+              <span>M-Team API Key</span>
+              <input id="mteamApiKey" type="password" autocomplete="off" placeholder="页面只有下载按钮时必填">
+            </label>
+            <button id="saveQbBtn" class="btn btn-primary" type="button">保存设置</button>
+          </div>
+          <div id="qbMessage" class="downloader-message">
+            密码和 API Key 仅保存在当前 Chrome 扩展的本地存储中，不会包含在导出的 JSON 里。
+          </div>
+
+          <div class="core-settings">
+            <div>
+              <strong>PT Core Service</strong>
+              <span>资源、账号、qB 做种汇总和审计记录持久化。</span>
+            </div>
+            <label>
+              <span>服务地址</span>
+              <input id="coreServiceUrl" type="url" autocomplete="off">
+            </label>
+            <label>
+              <input id="coreAutoSync" type="checkbox">
+              <span>扫描后自动同步</span>
+            </label>
+            <button id="saveCoreBtn" class="btn btn-quiet" type="button">保存 Core 设置</button>
+          </div>
+
+          <div class="guard-settings">
+            <div>
+              <strong>Free Guard</strong>
+              <span>后台每分钟检查一次，仅管理带 ptagent 标签的未完成任务。</span>
+            </div>
+            <label>
+              <input id="guardMonitorEnabled" type="checkbox">
+              <span>后台监控</span>
+            </label>
+            <label>
+              <span>保护窗口</span>
+              <input id="guardMinutes" type="number" min="1" max="120" step="1">
+              <span>分钟</span>
+            </label>
+            <label class="danger-switch">
+              <input id="autoDeleteExpired" type="checkbox">
+              <span>进入保护窗口后自动删除任务和文件</span>
+            </label>
+            <button id="saveGuardBtn" class="btn btn-quiet" type="button">保存保护设置</button>
+          </div>
+
+          <div class="qb-table-header" aria-hidden="true">
+            <span>任务</span>
+            <span>状态</span>
+            <span>进度</span>
+            <span>下载速度</span>
+            <span>Free Guard / 截止时间</span>
+          </div>
+          <div id="qbList" class="qb-list">
+            <div class="empty compact-empty">连接 qBittorrent 后显示下载任务。</div>
+          </div>
+
+          <div class="audit-head">
+            <div>
+              <div class="panel-kicker">LIFECYCLE AUDIT</div>
+              <h3>最近动作记录</h3>
+            </div>
+            <button id="exportAuditBtn" class="btn btn-quiet" type="button">导出审计 JSON</button>
+          </div>
+          <div id="auditList" class="audit-list">
+            <div class="empty compact-empty">暂无下载和保护动作记录。</div>
+          </div>
+        </section>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script src="private-config.js"></script>
+  <script src="assessment-engine.js"></script>
+  <script src="admission-engine.js"></script>
+  <script src="core-client.js"></script>
+  <script src="decision-engine.js"></script>
+  <script src="guard-engine.js"></script>
+  <script src="mteam-backfill.js"></script>
+  <script src="qb-client.js"></script>
+  <script src="popup.js"></script>
+</body>
+</html>

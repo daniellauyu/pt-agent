@@ -1,0 +1,573 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>M-Team Mock Torrents</title>
+  <style>
+    :root {
+      --bg: #f4f6f8;
+      --panel: #ffffff;
+      --text: #1e252c;
+      --muted: #67727d;
+      --line: #dce3e8;
+      --blue: #2d6cdf;
+      --green: #198754;
+      --orange: #b66a00;
+      --red: #c93535;
+      --purple: #7a4bd8;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: Arial, "Microsoft YaHei", sans-serif;
+      letter-spacing: 0;
+    }
+
+    a {
+      color: var(--blue);
+      text-decoration: none;
+    }
+
+    .site-header {
+      background: #15202b;
+      color: #ffffff;
+      padding: 14px 24px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 18px;
+    }
+
+    .brand {
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      font-weight: 700;
+    }
+
+    .logo {
+      width: 34px;
+      height: 34px;
+      border-radius: 7px;
+      background: var(--blue);
+      display: grid;
+      place-items: center;
+      font-weight: 800;
+    }
+
+    .userbar {
+      color: #cbd5df;
+      font-size: 13px;
+      display: flex;
+      gap: 14px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+    }
+
+    .container {
+      max-width: 1180px;
+      margin: 22px auto;
+      padding: 0 18px;
+    }
+
+    .notice {
+      border: 1px solid #cfd9e3;
+      background: #ffffff;
+      border-radius: 8px;
+      padding: 14px 16px;
+      margin-bottom: 16px;
+      display: flex;
+      justify-content: space-between;
+      gap: 16px;
+      align-items: center;
+    }
+
+    .notice h1 {
+      margin: 0 0 4px;
+      font-size: 20px;
+      line-height: 1.2;
+    }
+
+    .notice p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+    }
+
+    .filters {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+    }
+
+    .filter {
+      border: 1px solid var(--line);
+      background: #fff;
+      border-radius: 8px;
+      padding: 8px 11px;
+      font-size: 13px;
+    }
+
+    .filter.active {
+      color: #fff;
+      border-color: var(--blue);
+      background: var(--blue);
+    }
+
+    .torrent-panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      font-size: 13px;
+    }
+
+    th {
+      text-align: left;
+      background: #edf2f6;
+      color: #4c5964;
+      padding: 11px 12px;
+      border-bottom: 1px solid var(--line);
+      white-space: nowrap;
+    }
+
+    td {
+      padding: 12px;
+      border-bottom: 1px solid var(--line);
+      vertical-align: middle;
+    }
+
+    tr:last-child td {
+      border-bottom: 0;
+    }
+
+    .category-icon {
+      width: 28px;
+      height: 28px;
+      border-radius: 6px;
+      display: grid;
+      place-items: center;
+      color: #fff;
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .movie {
+      background: var(--blue);
+    }
+
+    .tv {
+      background: var(--purple);
+    }
+
+    .game {
+      background: var(--orange);
+    }
+
+    .doc {
+      background: var(--green);
+    }
+
+    .torrent-name {
+      font-weight: 700;
+      margin-bottom: 4px;
+      line-height: 1.35;
+    }
+
+    .torrent-desc {
+      color: var(--muted);
+      font-size: 12px;
+      line-height: 1.35;
+    }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      gap: 4px;
+      padding: 3px 7px;
+      border-radius: 999px;
+      font-size: 12px;
+      font-weight: 700;
+      white-space: nowrap;
+    }
+
+    .tag-free {
+      color: var(--green);
+      background: #e8f6ef;
+      border: 1px solid #bce5cd;
+    }
+
+    .tag-2xfree {
+      color: var(--purple);
+      background: #f0ebff;
+      border: 1px solid #d8ccff;
+    }
+
+    .tag-normal {
+      color: #59636e;
+      background: #f0f2f4;
+      border: 1px solid #d8dde2;
+    }
+
+    .tag-hr {
+      color: var(--red);
+      background: #fdeaea;
+      border: 1px solid #f5bbbb;
+    }
+
+    .tag-warning {
+      color: var(--orange);
+      background: #fff2db;
+      border: 1px solid #f4d29d;
+    }
+
+    .time-left {
+      font-weight: 700;
+    }
+
+    .time-left.safe {
+      color: var(--green);
+    }
+
+    .time-left.warning {
+      color: var(--orange);
+    }
+
+    .time-left.danger {
+      color: var(--red);
+    }
+
+    .numbers {
+      display: flex;
+      gap: 8px;
+      white-space: nowrap;
+    }
+
+    .num {
+      display: inline-flex;
+      gap: 4px;
+      align-items: center;
+    }
+
+    .seeders {
+      color: var(--green);
+    }
+
+    .leechers {
+      color: var(--red);
+    }
+
+    .completed {
+      color: var(--blue);
+    }
+
+    .download-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-height: 30px;
+      padding: 0 10px;
+      border-radius: 7px;
+      color: #fff;
+      background: var(--blue);
+      font-size: 12px;
+      font-weight: 700;
+    }
+
+    .mock-json {
+      margin-top: 16px;
+      background: #15202b;
+      color: #d8e2ec;
+      border-radius: 8px;
+      padding: 14px 16px;
+      font-size: 12px;
+      overflow-x: auto;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 860px) {
+      .site-header,
+      .notice {
+        align-items: flex-start;
+        flex-direction: column;
+      }
+
+      table {
+        display: block;
+        overflow-x: auto;
+      }
+    }
+  </style>
+</head>
+<body>
+  <header class="site-header">
+    <div class="brand">
+      <div class="logo">MT</div>
+      <div>M-Team Mock</div>
+    </div>
+    <div class="userbar" id="user-stats" data-username="demo_user">
+      <span>上传量: <strong data-user-uploaded="95GB">95GB</strong></span>
+      <span>下载量: <strong data-user-downloaded="100GB">100GB</strong></span>
+      <span>分享率: <strong data-user-ratio="0.95">0.95</strong></span>
+      <span>魔力: <strong data-user-bonus="3520">3520</strong></span>
+      <span>做种容量: <strong data-user-seeding-size="1.8TB">1.8TB</strong></span>
+    </div>
+  </header>
+
+  <main class="container">
+    <section class="notice">
+      <div>
+        <h1>种子列表</h1>
+        <p>这个页面用于模拟 PT 站列表页，供 Chrome 插件或 HTML 解析器提取 Free 状态、截止时间和下载链接。</p>
+      </div>
+      <div class="filters">
+        <span class="filter active">全部</span>
+        <span class="filter">Free</span>
+        <span class="filter">2xFree</span>
+        <span class="filter">无 HR</span>
+      </div>
+    </section>
+
+    <section class="torrent-panel">
+      <table id="torrent-table" class="torrents">
+        <thead>
+          <tr>
+            <th>类型</th>
+            <th>标题</th>
+            <th>优惠</th>
+            <th>Free 截止</th>
+            <th>剩余</th>
+            <th>大小</th>
+            <th>做种/下载/完成</th>
+            <th>发布时间</th>
+            <th>下载</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr
+            class="torrent-row"
+            data-site="mteam"
+            data-torrent-id="100001"
+            data-info-hash="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+            data-title="M-Team 蓝光原盘合集 Vol.12"
+            data-size-bytes="45741408256"
+            data-free-type="free"
+            data-free-start="2026-07-23T08:00:00+08:00"
+            data-free-end="2026-07-24T08:00:00+08:00"
+            data-seeders="18"
+            data-leechers="74"
+            data-completed="146"
+            data-hr="false"
+            data-detail-url="/details.php?id=100001"
+            data-download-url="/download.php?id=100001&passkey=mock-passkey"
+          >
+            <td><div class="category-icon movie">电影</div></td>
+            <td>
+              <div class="torrent-name"><a class="torrent-title-link" href="/details.php?id=100001">M-Team 蓝光原盘合集 Vol.12</a></div>
+              <div class="torrent-desc">BluRay REMUX / 2160p / HDR10 / 官种 / 冷门大包</div>
+            </td>
+            <td><span class="tag tag-free free-label" title="Free">Free</span></td>
+            <td><time class="free-end" datetime="2026-07-24T08:00:00+08:00">2026-07-24 08:00</time></td>
+            <td><span class="time-left safe" data-free-left="17h 06m">17h 06m</span></td>
+            <td><span class="size" data-size="42.6GB">42.6GB</span></td>
+            <td>
+              <div class="numbers">
+                <span class="num seeders">↑ <b>18</b></span>
+                <span class="num leechers">↓ <b>74</b></span>
+                <span class="num completed">✓ <b>146</b></span>
+              </div>
+            </td>
+            <td><time class="published-at" datetime="2026-07-23T07:45:00+08:00">07-23 07:45</time></td>
+            <td><a class="download-btn torrent-download" href="/download.php?id=100001&passkey=mock-passkey">下载</a></td>
+          </tr>
+
+          <tr
+            class="torrent-row"
+            data-site="mteam"
+            data-torrent-id="100002"
+            data-info-hash="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+            data-title="纪录片精选 2160p REMUX"
+            data-size-bytes="73443940762"
+            data-free-type="2xfree"
+            data-free-start="2026-07-23T10:00:00+08:00"
+            data-free-end="2026-07-25T10:00:00+08:00"
+            data-seeders="9"
+            data-leechers="41"
+            data-completed="88"
+            data-hr="false"
+            data-detail-url="/details.php?id=100002"
+            data-download-url="/download.php?id=100002&passkey=mock-passkey"
+          >
+            <td><div class="category-icon doc">纪录</div></td>
+            <td>
+              <div class="torrent-name"><a class="torrent-title-link" href="/details.php?id=100002">纪录片精选 2160p REMUX</a></div>
+              <div class="torrent-desc">Documentary / UHD / 多集合集 / 适合长期保种</div>
+            </td>
+            <td><span class="tag tag-2xfree free-label" title="2xFree">2xFree</span></td>
+            <td><time class="free-end" datetime="2026-07-25T10:00:00+08:00">2026-07-25 10:00</time></td>
+            <td><span class="time-left safe" data-free-left="43h 06m">43h 06m</span></td>
+            <td><span class="size" data-size="68.4GB">68.4GB</span></td>
+            <td>
+              <div class="numbers">
+                <span class="num seeders">↑ <b>9</b></span>
+                <span class="num leechers">↓ <b>41</b></span>
+                <span class="num completed">✓ <b>88</b></span>
+              </div>
+            </td>
+            <td><time class="published-at" datetime="2026-07-23T09:20:00+08:00">07-23 09:20</time></td>
+            <td><a class="download-btn torrent-download" href="/download.php?id=100002&passkey=mock-passkey">下载</a></td>
+          </tr>
+
+          <tr
+            class="torrent-row"
+            data-site="mteam"
+            data-torrent-id="100003"
+            data-info-hash="cccccccccccccccccccccccccccccccccccccccc"
+            data-title="热门电影合集 2026 1080p"
+            data-size-bytes="103186522113"
+            data-free-type="unknown"
+            data-free-start=""
+            data-free-end=""
+            data-seeders="420"
+            data-leechers="33"
+            data-completed="2104"
+            data-hr="false"
+            data-detail-url="/details.php?id=100003"
+            data-download-url="/download.php?id=100003&passkey=mock-passkey"
+          >
+            <td><div class="category-icon movie">电影</div></td>
+            <td>
+              <div class="torrent-name"><a class="torrent-title-link" href="/details.php?id=100003">热门电影合集 2026 1080p</a></div>
+              <div class="torrent-desc">RSS 只识别到 Free 字样，但页面未提供截止时间，应该进入风险队列。</div>
+            </td>
+            <td><span class="tag tag-warning free-label" title="FreeUnknown">Free?</span></td>
+            <td><span class="free-end missing" data-free-end="">未知</span></td>
+            <td><span class="time-left warning" data-free-left="">未知</span></td>
+            <td><span class="size" data-size="96.1GB">96.1GB</span></td>
+            <td>
+              <div class="numbers">
+                <span class="num seeders">↑ <b>420</b></span>
+                <span class="num leechers">↓ <b>33</b></span>
+                <span class="num completed">✓ <b>2104</b></span>
+              </div>
+            </td>
+            <td><time class="published-at" datetime="2026-07-23T11:55:00+08:00">07-23 11:55</time></td>
+            <td><a class="download-btn torrent-download" href="/download.php?id=100003&passkey=mock-passkey">下载</a></td>
+          </tr>
+
+          <tr
+            class="torrent-row"
+            data-site="mteam"
+            data-torrent-id="100004"
+            data-info-hash="dddddddddddddddddddddddddddddddddddddddd"
+            data-title="游戏资源包 Standard Edition"
+            data-size-bytes="129170980045"
+            data-free-type="free"
+            data-free-start="2026-07-23T12:00:00+08:00"
+            data-free-end="2026-07-23T15:05:00+08:00"
+            data-seeders="5"
+            data-leechers="12"
+            data-completed="25"
+            data-hr="false"
+            data-detail-url="/details.php?id=100004"
+            data-download-url="/download.php?id=100004&passkey=mock-passkey"
+          >
+            <td><div class="category-icon game">游戏</div></td>
+            <td>
+              <div class="torrent-name"><a class="torrent-title-link" href="/details.php?id=100004">游戏资源包 Standard Edition</a></div>
+              <div class="torrent-desc">大体积资源，Free 即将到期；解析器应标记为风险下载。</div>
+            </td>
+            <td><span class="tag tag-free free-label" title="Free">Free</span></td>
+            <td><time class="free-end" datetime="2026-07-23T15:05:00+08:00">2026-07-23 15:05</time></td>
+            <td><span class="time-left danger" data-free-left="10m">10m</span></td>
+            <td><span class="size" data-size="120.3GB">120.3GB</span></td>
+            <td>
+              <div class="numbers">
+                <span class="num seeders">↑ <b>5</b></span>
+                <span class="num leechers">↓ <b>12</b></span>
+                <span class="num completed">✓ <b>25</b></span>
+              </div>
+            </td>
+            <td><time class="published-at" datetime="2026-07-23T12:05:00+08:00">07-23 12:05</time></td>
+            <td><a class="download-btn torrent-download" href="/download.php?id=100004&passkey=mock-passkey">下载</a></td>
+          </tr>
+
+          <tr
+            class="torrent-row"
+            data-site="mteam"
+            data-torrent-id="100005"
+            data-info-hash="eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+            data-title="剧集第 1 季 Complete Pack"
+            data-size-bytes="53687091200"
+            data-free-type="normal"
+            data-free-start=""
+            data-free-end=""
+            data-seeders="37"
+            data-leechers="6"
+            data-completed="309"
+            data-hr="true"
+            data-detail-url="/details.php?id=100005"
+            data-download-url="/download.php?id=100005&passkey=mock-passkey"
+          >
+            <td><div class="category-icon tv">剧集</div></td>
+            <td>
+              <div class="torrent-name"><a class="torrent-title-link" href="/details.php?id=100005">剧集第 1 季 Complete Pack</a></div>
+              <div class="torrent-desc">普通种子，带 HR。新手期策略应拒绝自动下载。</div>
+            </td>
+            <td>
+              <span class="tag tag-normal free-label" title="Normal">普通</span>
+              <span class="tag tag-hr" title="H&R">HR</span>
+            </td>
+            <td><span class="free-end missing" data-free-end="">无</span></td>
+            <td><span class="time-left warning" data-free-left="">无</span></td>
+            <td><span class="size" data-size="50GB">50GB</span></td>
+            <td>
+              <div class="numbers">
+                <span class="num seeders">↑ <b>37</b></span>
+                <span class="num leechers">↓ <b>6</b></span>
+                <span class="num completed">✓ <b>309</b></span>
+              </div>
+            </td>
+            <td><time class="published-at" datetime="2026-07-22T20:10:00+08:00">07-22 20:10</time></td>
+            <td><a class="download-btn torrent-download" href="/download.php?id=100005&passkey=mock-passkey">下载</a></td>
+          </tr>
+        </tbody>
+      </table>
+    </section>
+
+    <pre class="mock-json" id="parser-hint">解析提示：
+document.querySelectorAll(".torrent-row")
+
+推荐字段：
+row.dataset.torrentId
+row.dataset.title
+row.dataset.sizeBytes
+row.dataset.freeType
+row.dataset.freeEnd
+row.dataset.seeders
+row.dataset.leechers
+row.dataset.hr
+row.dataset.downloadUrl
+
+也可以从可见 DOM 解析：
+.torrent-title-link
+.free-label
+.free-end[datetime]
+.time-left
+.size[data-size]
+.torrent-download[href]</pre>
+  </main>
+</body>
+</html>

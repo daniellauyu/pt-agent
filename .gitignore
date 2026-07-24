@@ -1,0 +1,22 @@
+.DS_Store
+.codegraph/
+
+# Local reference repositories are not part of the PT Agent source tree.
+reference-projects/
+
+# Chrome extension local secrets.
+pt-agent-extension/private-config.js
+
+# Python local environment and runtime data.
+pt-core-service/.env
+pt-core-service/.venv/
+pt-core-service/data/
+pt-core-service/.pytest_cache/
+pt-core-service/**/__pycache__/
+*.py[cod]
+
+# Editor and temporary files.
+.idea/
+.vscode/
+*.swp
+*.tmp

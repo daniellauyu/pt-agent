@@ -5,10 +5,6 @@ const state = {
   activeView: "resources",
   sourceTabId: null,
   policySettings: null,
-  coreSettings: null,
-  coreSyncing: false,
-  coreSyncQueued: false,
-  corePrediction: null,
   qbSettings: null,
   qbTorrents: [],
   qbSeedingSummary: null,
@@ -32,7 +28,7 @@ const defaultSettings = {
   scarceOpportunityMinDemandRatio: 10,
   guardMonitorEnabled: true,
   autoDeleteExpired: false,
-  guardExecutor: "core",
+  guardExecutor: "extension",
   rejectHr: true,
   rejectMissingFreeEnd: true
 };
@@ -43,12 +39,6 @@ const defaultQbSettings = {
   password: globalThis.PT_AGENT_PRIVATE_CONFIG.qbPassword,
   savePath: globalThis.PT_AGENT_PRIVATE_CONFIG.qbSavePath,
   mteamApiKey: globalThis.PT_AGENT_PRIVATE_CONFIG.mteamApiKey
-};
-
-const defaultCoreSettings = {
-  address: globalThis.PT_AGENT_PRIVATE_CONFIG.coreServiceUrl,
-  apiToken: globalThis.PT_AGENT_PRIVATE_CONFIG.coreApiToken || "",
-  autoSync: true
 };
 
 const bytesToGB = (bytes) => {
@@ -127,21 +117,17 @@ const fillGuardSettingsForm = (settings) => {
   $("guardMonitorEnabled").checked = settings.guardMonitorEnabled !== false;
   $("guardMinutes").value = String(settings.guardMinutes || 10);
   $("autoDeleteExpired").checked = settings.autoDeleteExpired === true;
-  $("autoDeleteExpired").disabled = settings.guardExecutor !== "extension";
 };
 
 const saveGuardSettings = async () => {
   const next = {
     ...(state.policySettings || defaultSettings),
+    guardExecutor: "extension",
     guardMonitorEnabled: $("guardMonitorEnabled").checked,
     guardMinutes: Math.max(1, Math.min(120, Number($("guardMinutes").value || 10))),
     autoDeleteExpired: $("autoDeleteExpired").checked
   };
-  if (
-    next.guardExecutor === "extension" &&
-    next.autoDeleteExpired &&
-    !state.policySettings?.autoDeleteExpired
-  ) {
+  if (next.autoDeleteExpired && !state.policySettings?.autoDeleteExpired) {
     const confirmed = confirm("开启后，带 ptagent 标签且未完成的任务进入保护窗口时，会从 qB 删除任务并同步删除文件。确定开启吗？");
     if (!confirmed) {
       $("autoDeleteExpired").checked = false;
@@ -151,9 +137,7 @@ const saveGuardSettings = async () => {
   state.policySettings = next;
   await chrome.storage.local.set({ ptAgentSettings: next });
   setQbMessage(
-    next.guardExecutor !== "extension"
-      ? "Free Guard 已保存：Core 是唯一删除执行者，扩展仅做只读预警。"
-      : next.autoDeleteExpired
+    next.autoDeleteExpired
       ? `Free Guard 已开启自动保护：到期前 ${next.guardMinutes} 分钟删除未完成任务和文件。`
       : `Free Guard 已保存：后台监控${next.guardMonitorEnabled ? "开启" : "关闭"}，自动删除关闭。`,
     "success"
@@ -178,98 +162,6 @@ const appendAuditEvent = async (event) => {
   state.auditEvents = events.slice(0, 500);
   await chrome.storage.local.set({ ptAgentAuditLog: state.auditEvents });
   renderAuditEvents();
-};
-
-const getCoreSettings = async () => {
-  const stored = await chrome.storage.local.get("ptAgentCoreSettings");
-  return { ...defaultCoreSettings, ...(stored.ptAgentCoreSettings || {}) };
-};
-
-const fillCoreSettingsForm = (settings) => {
-  $("coreServiceUrl").value = settings.address || "";
-  $("coreApiToken").value = settings.apiToken || "";
-  $("coreAutoSync").checked = settings.autoSync !== false;
-};
-
-const setCoreStatus = (text, type, detail = "") => {
-  $("coreStatus").textContent = text;
-  $("coreStatus").className = `site-status ${type}`;
-  $("coreStatus").title = detail;
-};
-
-const saveCoreSettings = async ({ announce = true } = {}) => {
-  const settings = {
-    address: $("coreServiceUrl").value.trim(),
-    apiToken: $("coreApiToken").value,
-    autoSync: $("coreAutoSync").checked
-  };
-  if (!/^https?:\/\//i.test(settings.address)) {
-    throw new Error("PT Core 地址必须以 http:// 或 https:// 开头");
-  }
-  state.coreSettings = settings;
-  await chrome.storage.local.set({ ptAgentCoreSettings: settings });
-  if (announce) setQbMessage("PT Core 设置已保存。", "success");
-  return settings;
-};
-
-const syncToCore = async ({ silent = false } = {}) => {
-  if (!state.scan) {
-    if (!silent) setQbMessage("请先加载 M-Team 资源，再同步 PT Core。", "error");
-    return null;
-  }
-  if (state.coreSyncing) {
-    state.coreSyncQueued = true;
-    return null;
-  }
-  state.coreSyncing = true;
-  $("coreSyncBtn").disabled = true;
-  setCoreStatus("Core 同步中", "warn");
-  try {
-    state.coreSettings = await saveCoreSettings({ announce: false });
-    await loadAuditEvents();
-    const client = globalThis.PT_AGENT_CORE.createClient(state.coreSettings);
-    const result = await client.sync({
-      scan: state.scan,
-      torrents: state.evaluated,
-      qbSeedingSummary: state.qbSeedingSummary,
-      auditEvents: state.auditEvents
-    });
-    if (result.predictionResult) {
-      state.corePrediction = result.predictionResult;
-      renderAccount();
-    }
-    const coreEvaluations = result.evaluationResult?.items || [];
-    if (coreEvaluations.length === state.evaluated.length) {
-      state.evaluated = state.evaluated.map((torrent, index) => ({
-        ...torrent,
-        decision: coreEvaluations[index].decision,
-        score: coreEvaluations[index].score,
-        reasons: coreEvaluations[index].reasons,
-        decisionSource: "core"
-      }));
-      renderList();
-    }
-    const version = result.service?.version ? ` v${result.service.version}` : "";
-    setCoreStatus(`Core 已连接${version}`, "ok");
-    if (!silent) {
-      setQbMessage(
-        `PT Core 同步完成：资源新增 ${result.torrentResult.created}、更新 ${result.torrentResult.updated}；审计新增 ${result.auditResult.created}、跳过 ${result.auditResult.skipped}。`,
-        "success"
-      );
-    }
-    return result;
-  } catch (error) {
-    setCoreStatus("Core 离线", "bad", error.message || String(error));
-    if (!silent) setQbMessage(error.message || String(error), "error");
-    return null;
-  } finally {
-    state.coreSyncing = false;
-    $("coreSyncBtn").disabled = false;
-    if (state.coreSyncQueued) {
-      state.coreSyncQueued = false;
-      setTimeout(() => syncToCore({ silent: true }), 0);
-    }
-  }
 };
 
 const getQbSettings = async () => {
@@ -575,13 +467,6 @@ const isActiveDownload = (torrent) => {
 };
 
 const admissionFor = (torrent, batchQueued = 0, activeDownloadsOverride = null) => {
-  if (torrent?.decisionSource === "core") {
-    const allowed = torrent.decision === "recommend" && Number(torrent.score || 0) >= 80;
-    return {
-      allowed,
-      reasons: allowed ? [] : (torrent.reasons || ["Core 安全准入未通过"])
-    };
-  }
   return globalThis.PT_AGENT_ADMISSION.evaluate({
     torrent,
     account: state.scan?.account || {},
@@ -693,7 +578,6 @@ const refreshQbTorrents = async ({ silent = false } = {}) => {
     setQbStatus("已连接", "ok");
     const downloadingCount = state.qbTorrents.filter(isActiveDownload).length;
     if (!silent) setQbMessage(`qBittorrent 当前有 ${downloadingCount} 个下载中任务。`, "success");
-    if (state.coreSettings?.autoSync && state.scan) syncToCore({ silent: true });
     return true;
   } catch (error) {
     setQbStatus("连接失败", "bad");
@@ -733,7 +617,6 @@ const enqueueTorrentDirectToQb = async (torrent, downloadUrl) => {
     category: "PT_AGENT"
   });
   return {
-    route: "qb_fallback",
     evaluation: {
       decision: torrent.decision,
       score: Number(torrent.score || 0)
@@ -741,7 +624,7 @@ const enqueueTorrentDirectToQb = async (torrent, downloadUrl) => {
   };
 };
 
-const enqueueTorrentViaCore = async (torrent, { manualOverride = false } = {}) => {
+const enqueueTorrent = async (torrent, { manualOverride = false } = {}) => {
   const key = `${torrent.site}:${torrent.torrentId || torrent.rowIndex}`;
   state.qbPushStatus.set(key, "loading");
   renderList();
@@ -749,63 +632,26 @@ const enqueueTorrentViaCore = async (torrent, { manualOverride = false } = {}) =
     if (!torrent.freeEndAt && !manualOverride) {
       throw new Error("缺少 Free 截止时间，未发送到 qBittorrent");
     }
-    state.coreSettings = await saveCoreSettings({ announce: false });
     const downloadUrl = await resolveTorrentDownloadUrl(torrent);
-    const client = globalThis.PT_AGENT_CORE.createClient(state.coreSettings);
-    let route = "core";
-    let coreUnavailableReason = "";
-    let result;
-    try {
-      result = await client.enqueueTorrent({
-        scan: state.scan,
-        torrent,
-        downloadUrl,
-        savePath: state.qbSettings?.savePath || "",
-        manualOverride
-      });
-    } catch (error) {
-      if (error.code !== "CORE_UNAVAILABLE") throw error;
-      route = "qb_fallback";
-      coreUnavailableReason = error.message || String(error);
-      try {
-        result = await enqueueTorrentDirectToQb(torrent, downloadUrl);
-      } catch (qbError) {
-        throw new Error(
-          `Core 不可用（${coreUnavailableReason}）；插件直连 qB 失败：${qbError.message || String(qbError)}`
-        );
-      }
-    }
-    const deadline = torrent.freeEndAt;
-    const usedFallback = route === "qb_fallback";
+    const result = await enqueueTorrentDirectToQb(torrent, downloadUrl);
     await appendAuditEvent({
-      action: usedFallback
-        ? (manualOverride ? "enqueue_manual_override_qb_fallback" : "enqueue_qb_fallback")
-        : (manualOverride ? "enqueue_manual_override" : "enqueue"),
+      action: manualOverride ? "enqueue_manual_override" : "enqueue",
       status: "queued",
       title: torrent.title,
       site: torrent.site,
       torrentId: torrent.torrentId || "",
-      deadline,
+      deadline: torrent.freeEndAt,
       progress: 0,
-      reason: usedFallback
-        ? `Core 不可用，Chrome 插件直连 qB；分类 PT_AGENT，评分 ${result.evaluation.score}`
-        : manualOverride
-          ? `用户手动覆盖 risk 准入，分类 PT_AGENT，评分 ${result.evaluation.score}`
-          : `通过 Core 安全准入，分类 PT_AGENT，评分 ${result.evaluation.score}`,
+      reason: manualOverride
+        ? `用户手动覆盖 risk 准入，分类 PT_AGENT，评分 ${result.evaluation.score}`
+        : `本地安全准入通过，分类 PT_AGENT，评分 ${result.evaluation.score}`,
       deleteFiles: false
     }).catch(() => {});
     state.qbPushStatus.set(key, "success");
-    setCoreStatus(
-      usedFallback ? "Core 离线 · 插件直连 qB" : "Core 已连接",
-      usedFallback ? "bad" : "ok",
-      usedFallback ? coreUnavailableReason : ""
-    );
     setQbMessage(
-      usedFallback
-        ? `已由 Chrome 插件直连 qB：${torrent.title}；分类：PT_AGENT`
-        : manualOverride
-        ? `已按你的判断手动发送：${torrent.title}；风险原因已记录`
-        : `已由 PT Core 安全发送：${torrent.title}；分类：PT_AGENT`,
+      manualOverride
+        ? `已按你的判断手动发送：${torrent.title}；分类：PT_AGENT`
+        : `已发送到 qBittorrent：${torrent.title}；分类：PT_AGENT`,
       "success"
     );
     setTimeout(() => refreshQbTorrents({ silent: true }), 1000);
@@ -830,7 +676,7 @@ const enqueueTorrentViaCore = async (torrent, { manualOverride = false } = {}) =
   }
 };
 
-const pushRecommendedViaCore = async () => {
+const pushRecommended = async () => {
   const torrents = state.evaluated.filter((torrent) => torrent.decision === "recommend");
   if (!torrents.length) {
     setQbMessage("当前没有可一键下载的推荐资源。", "error");
@@ -839,7 +685,7 @@ const pushRecommendedViaCore = async () => {
   $("downloadRecommendedBtn").disabled = true;
   let succeeded = 0;
   for (const torrent of torrents) {
-    if (await enqueueTorrentViaCore(torrent)) succeeded += 1;
+    if (await enqueueTorrent(torrent)) succeeded += 1;
   }
   $("downloadRecommendedBtn").disabled = false;
   setQbMessage(
@@ -889,44 +735,7 @@ const renderAccount = () => {
     target: 6000,
     assessmentDays: 30
   });
-  const corePrediction = state.corePrediction;
-  const assessment = corePrediction ? {
-    target: corePrediction.targets.bonus_points,
-    current: corePrediction.current.bonus_points,
-    remaining: corePrediction.remaining.bonus_points,
-    progress: corePrediction.progress_percent,
-    rate: corePrediction.current.bonus_per_hour,
-    deadlineAt: corePrediction.estimated_deadline
-      ? Date.parse(corePrediction.estimated_deadline)
-      : null,
-    hoursLeft: corePrediction.hours_left,
-    requiredRate: corePrediction.required_bonus_per_hour,
-    etaHours: corePrediction.estimated_completion_at && corePrediction.hours_left !== null
-      ? Math.max(
-        0,
-        (Date.parse(corePrediction.estimated_completion_at) - Date.now()) / 3600000
-      )
-      : Infinity,
-    projectedAtDeadline: corePrediction.projected_bonus_at_deadline,
-    safetyMarginHours: corePrediction.safety_margin_hours,
-    status: corePrediction.assessment_status,
-    remainingUploadedBytes: corePrediction.remaining.uploaded_bytes,
-    remainingDownloadedBytes: corePrediction.remaining.downloaded_bytes,
-    seedingCount: corePrediction.current.seed_count,
-    seedingSizeBytes: corePrediction.current.seed_size_bytes,
-    recommendedPlan: {
-      bufferDays: corePrediction.recommended_plan.buffer_days,
-      targetRate: corePrediction.recommended_plan.target_bonus_per_hour,
-      additionalRate: corePrediction.recommended_plan.additional_bonus_per_hour,
-      estimatedAdditionalSeedBytesLow:
-        corePrediction.recommended_plan.estimated_additional_seed_bytes_low,
-      estimatedAdditionalSeedBytesHigh:
-        corePrediction.recommended_plan.estimated_additional_seed_bytes_high,
-      estimatedTargetSeedSizeBytes:
-        corePrediction.recommended_plan.estimated_target_seed_size_bytes
-    },
-    achieved: corePrediction.achieved
-  } : fallbackAssessment;
+  const assessment = fallbackAssessment;
   const etaDays = Number.isFinite(assessment.etaHours) ? `${(assessment.etaHours / 24).toFixed(1)} 天` : "无法估算";
   const requiredRate = Number.isFinite(assessment.requiredRate) ? `${assessment.requiredRate.toFixed(2)}/h` : "已超过估算期限";
   const recommendedPlan = assessment.recommendedPlan || {};
@@ -1131,7 +940,7 @@ const renderList = () => {
       const torrent = state.evaluated.find((item) => item.rowIndex === rowIndex);
       if (!torrent) return;
       const manualOverride = torrent.decision === "risk";
-      enqueueTorrentViaCore(torrent, { manualOverride });
+      enqueueTorrent(torrent, { manualOverride });
     });
   });
 };
@@ -1210,7 +1019,6 @@ const runScan = async () => {
       ? `M-Team 当前 Free · ${catalogStats.total} 个资源 · 普通区 ${catalogStats.normalPages} 页 / 成人区 ${catalogStats.adultPages} 页`
       : `${state.scan?.page?.title || "当前页面"} · ${state.evaluated.length} 个资源`;
     renderList();
-    if (state.coreSettings?.autoSync) syncToCore({ silent: true });
   } catch (error) {
     $("list").innerHTML = `<div class="empty">扫描失败：${escapeHtml(error.message || String(error))}</div>`;
   }
@@ -1308,14 +1116,12 @@ document.addEventListener("DOMContentLoaded", async () => {
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
     state.sourceTabId = activeTab?.id || null;
   }
-  [state.policySettings, state.qbSettings, state.coreSettings] = await Promise.all([
+  [state.policySettings, state.qbSettings] = await Promise.all([
     getSettings(),
-    getQbSettings(),
-    getCoreSettings()
+    getQbSettings()
   ]);
   fillGuardSettingsForm(state.policySettings);
   fillQbSettingsForm(state.qbSettings);
-  fillCoreSettingsForm(state.coreSettings);
   await loadAuditEvents();
   $("scanBtn").addEventListener("click", runScan);
   $("sourceBtn").addEventListener("click", focusSourceTab);
@@ -1331,17 +1137,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("backfillDeadlineBtn").addEventListener("click", backfillMteamDeadlines);
   $("refreshQbBtn").addEventListener("click", refreshQbTorrents);
   $("saveGuardBtn").addEventListener("click", saveGuardSettings);
-  $("saveCoreBtn").addEventListener("click", async () => {
-    try {
-      await saveCoreSettings();
-      await syncToCore({ silent: true });
-    } catch (error) {
-      setCoreStatus("Core 配置错误", "bad", error.message || String(error));
-      setQbMessage(error.message || String(error), "error");
-    }
-  });
-  $("coreSyncBtn").addEventListener("click", () => syncToCore());
-  $("downloadRecommendedBtn").addEventListener("click", pushRecommendedViaCore);
+  $("downloadRecommendedBtn").addEventListener("click", pushRecommended);
   $("copyBtn").addEventListener("click", copyJson);
   $("downloadBtn").addEventListener("click", downloadJson);
   $("exportAuditBtn").addEventListener("click", exportAuditJson);

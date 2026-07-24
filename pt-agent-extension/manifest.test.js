@@ -21,16 +21,16 @@ test("grants API access to the configured qBittorrent WebUI", () => {
   );
 });
 
-test("grants access to the local PT Core Service", () => {
-  assert.ok(manifest.host_permissions.includes("http://127.0.0.1:8090/*"));
+test("does not request the removed PT Core Service host", () => {
+  assert.ok(!manifest.host_permissions.some((host) => host.includes("8090")));
 });
 
 test("keeps the toolbar popup as the compact mode", () => {
   assert.equal(manifest.action.default_popup, "popup.html");
 });
 
-test("publishes the Chrome direct qB fallback as extension version 0.10.3", () => {
-  assert.equal(manifest.version, "0.10.3");
+test("publishes the pure local-mode extension as version 0.11.0", () => {
+  assert.equal(manifest.version, "0.11.0");
 });
 
 test("service worker imports and migrates the local downloader preset", () => {
@@ -38,8 +38,8 @@ test("service worker imports and migrates the local downloader preset", () => {
   assert.match(background, /importScripts\("private-config\.js",\s*"guard-engine\.js",\s*"qb-client\.js"\)/);
   assert.match(background, /password:\s*privateConfig\.qbPassword/);
   assert.match(background, /mteamApiKey:\s*privateConfig\.mteamApiKey/);
-  assert.match(background, /ptAgentCoreSettings/);
-  assert.match(background, /privateConfig\.coreServiceUrl/);
+  assert.doesNotMatch(background, /ptAgentCoreSettings/);
+  assert.doesNotMatch(background, /coreServiceUrl/);
 });
 
 test("runs Free Guard from a background alarm with automatic deletion disabled by default", () => {

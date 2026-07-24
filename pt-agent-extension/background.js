@@ -1,7 +1,7 @@
 importScripts("private-config.js", "guard-engine.js", "qb-client.js");
 
 chrome.runtime.onInstalled.addListener(() => {
-  chrome.storage.local.get(["ptAgentSettings", "ptAgentQbSettings", "ptAgentCoreSettings"], (stored) => {
+  chrome.storage.local.get(["ptAgentSettings", "ptAgentQbSettings"], (stored) => {
     const updates = {};
     const privateConfig = globalThis.PT_AGENT_PRIVATE_CONFIG;
     updates.ptAgentSettings = {
@@ -18,10 +18,11 @@ chrome.runtime.onInstalled.addListener(() => {
       scarceOpportunityMinDemandRatio: 10,
       guardMonitorEnabled: true,
       autoDeleteExpired: false,
-      guardExecutor: "core",
+      guardExecutor: "extension",
       rejectHr: true,
       rejectMissingFreeEnd: true,
       ...(stored.ptAgentSettings || {}),
+      guardExecutor: "extension",
       maxTorrentSizeGB: Math.min(50, Number(stored.ptAgentSettings?.maxTorrentSizeGB || 50)),
       minimumScore: Math.max(80, Number(stored.ptAgentSettings?.minimumScore || 80)),
       maxActiveDownloads: Math.min(3, Number(stored.ptAgentSettings?.maxActiveDownloads || 3))
@@ -33,11 +34,6 @@ chrome.runtime.onInstalled.addListener(() => {
       password: privateConfig.qbPassword,
       savePath: stored.ptAgentQbSettings?.savePath || privateConfig.qbSavePath,
       mteamApiKey: privateConfig.mteamApiKey
-    };
-    updates.ptAgentCoreSettings = {
-      address: stored.ptAgentCoreSettings?.address || privateConfig.coreServiceUrl,
-      apiToken: stored.ptAgentCoreSettings?.apiToken || privateConfig.coreApiToken || "",
-      autoSync: stored.ptAgentCoreSettings?.autoSync ?? true
     };
     if (Object.keys(updates).length) chrome.storage.local.set(updates);
   });
@@ -69,8 +65,8 @@ const runFreeGuard = async () => {
     guardMinutes: 10,
     guardMonitorEnabled: true,
     autoDeleteExpired: false,
-    guardExecutor: "core",
-    ...(stored.ptAgentSettings || {})
+    ...(stored.ptAgentSettings || {}),
+    guardExecutor: "extension"
   };
   if (!settings.guardMonitorEnabled) return;
 

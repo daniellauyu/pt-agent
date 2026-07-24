@@ -48,8 +48,6 @@
           <p id="pageInfo">等待扫描来源页面</p>
         </div>
         <div class="topbar-actions">
-          <span id="coreStatus" class="site-status bad">Core 离线</span>
-          <button id="coreSyncBtn" class="btn btn-quiet" type="button">同步 Core</button>
           <button id="sourceBtn" class="btn btn-quiet" type="button">打开 M-Team</button>
           <button id="fullscreenBtn" class="btn btn-quiet" type="button">新标签页打开</button>
           <button id="scanBtn" class="btn btn-primary" type="button">
@@ -194,30 +192,10 @@
             密码和 API Key 仅保存在当前 Chrome 扩展的本地存储中，不会包含在导出的 JSON 里。
           </div>
 
-          <div class="core-settings">
-            <div>
-              <strong>PT Core Service</strong>
-              <span>资源、账号、qB 做种汇总和审计记录持久化。</span>
-            </div>
-            <label>
-              <span>服务地址</span>
-              <input id="coreServiceUrl" type="url" autocomplete="off">
-            </label>
-            <label>
-              <span>API Token（可选）</span>
-              <input id="coreApiToken" type="password" autocomplete="off">
-            </label>
-            <label>
-              <input id="coreAutoSync" type="checkbox">
-              <span>扫描后自动同步</span>
-            </label>
-            <button id="saveCoreBtn" class="btn btn-quiet" type="button">保存 Core 设置</button>
-          </div>
-
           <div class="guard-settings">
             <div>
               <strong>Free Guard</strong>
-              <span>Core 为默认执行者；扩展仅在 Core 离线时提供只读预警。</span>
+              <span>插件后台每分钟检查一次；到期前保护未完成任务。</span>
             </div>
             <label>
               <input id="guardMonitorEnabled" type="checkbox">
@@ -230,7 +208,7 @@
             </label>
             <label class="danger-switch">
               <input id="autoDeleteExpired" type="checkbox">
-              <span>旧版扩展执行器自动删除（Core 模式下忽略）</span>
+              <span>到期前自动删除未完成任务和文件</span>
             </label>
             <button id="saveGuardBtn" class="btn btn-quiet" type="button">保存保护设置</button>
           </div>
@@ -265,7 +243,6 @@
   <script src="private-config.js"></script>
   <script src="assessment-engine.js"></script>
   <script src="admission-engine.js"></script>
-  <script src="core-client.js"></script>
   <script src="decision-engine.js"></script>
   <script src="guard-engine.js"></script>
   <script src="mteam-backfill.js"></script>

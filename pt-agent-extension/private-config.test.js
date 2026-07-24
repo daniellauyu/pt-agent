@@ -17,5 +17,5 @@ test("repository ships a complete secret-free local config template", () => {
   assert.equal(config.mteamSiteUrl, "https://kp.m-team.cc/");
   assert.equal(config.mteamApiUrl, "https://api.m-team.cc/");
   assert.equal(config.mteamApiKey, "your_mteam_api_key");
-  assert.equal(config.coreServiceUrl, "http://127.0.0.1:8090/");
+  assert.ok(!("coreServiceUrl" in config), "local mode template must not ship a Core service URL");
 });

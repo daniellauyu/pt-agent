@@ -43,10 +43,6 @@ test("popup offers full-screen mode and a dedicated Free deadline column", () =>
   assert.match(html, /id="guardMonitorEnabled"/);
   assert.match(html, /id="autoDeleteExpired"/);
   assert.match(html, /id="auditList"/);
-  assert.match(html, /id="coreStatus"/);
-  assert.match(html, /id="coreSyncBtn"/);
-  assert.match(html, /id="coreServiceUrl"/);
-  assert.match(html, /id="coreAutoSync"/);
   assert.match(html, /class="app-shell"/);
   assert.ok(
     html.indexOf('src="private-config.js"') < html.indexOf('src="popup.js"'),
@@ -119,28 +115,25 @@ test("loads the admission and Free Guard engines before popup logic", () => {
   const popupIndex = html.indexOf('src="popup.js"');
   assert.ok(html.indexOf('src="admission-engine.js"') < popupIndex);
   assert.ok(html.indexOf('src="guard-engine.js"') < popupIndex);
-  assert.ok(html.indexOf('src="core-client.js"') < popupIndex);
 });
 
-test("syncs scan, qB seeding summary, and audit events to PT Core", () => {
+test("runs in pure local mode without any PT Core coupling", () => {
   const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
-  assert.match(script, /const syncToCore = async/);
-  assert.match(script, /torrents:\s*state\.evaluated/);
-  assert.match(script, /qbSeedingSummary:\s*state\.qbSeedingSummary/);
-  assert.match(script, /auditEvents:\s*state\.auditEvents/);
-  assert.match(script, /state\.coreSettings\?\.autoSync/);
+  const html = fs.readFileSync(path.join(extensionDir, "popup.html"), "utf8");
+  const background = fs.readFileSync(path.join(extensionDir, "background.js"), "utf8");
+  assert.doesNotMatch(script, /PT_AGENT_CORE/);
+  assert.doesNotMatch(script, /syncToCore|coreSettings|CORE_UNAVAILABLE|decisionSource/);
+  assert.doesNotMatch(html, /core-client\.js/);
+  assert.doesNotMatch(background, /ptAgentCoreSettings/);
 });
 
-test("prefers Core and falls back to direct qB when Core is unavailable", () => {
+test("sends recommended torrents directly to qBittorrent", () => {
   const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
-  assert.match(script, /const pushRecommendedViaCore =/);
-  assert.match(script, /PT_AGENT_CORE\.createClient\(state\.coreSettings\)/);
-  assert.match(script, /client\.enqueueTorrent\(/);
-  assert.match(script, /error\.code !== "CORE_UNAVAILABLE"/);
+  assert.match(script, /const pushRecommended =/);
+  assert.match(script, /const enqueueTorrentDirectToQb = async/);
   assert.match(script, /client\.ensureCategory\("PT_AGENT", savePath\)/);
   assert.match(script, /PT_AGENT_QB\.torrentTags\(torrent\.freeEndAt \|\| ""\)/);
   assert.match(script, /client\.addTorrent\(\{/);
-  assert.match(script, /enqueue_qb_fallback/);
 });
 
 test("loads the M-Team historical backfill helper before the popup logic", () => {

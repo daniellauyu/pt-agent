@@ -14,6 +14,18 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
+// 生命周期调试日志：打开插件 DevTools 控制台可见 [PT] 前缀记录，用于排查数据闪现/状态异常。
+const debug = (tag, data) => {
+  try {
+    const ts = new Date().toISOString().slice(11, 23);
+    if (data === undefined) {
+      console.log(`%c[PT ${ts}] ${tag}`, "color:#d4a24e;font-weight:600");
+    } else {
+      console.log(`%c[PT ${ts}] ${tag}`, "color:#d4a24e;font-weight:600", data);
+    }
+  } catch (_) {}
+};
+
 const defaultSettings = {
   guardMinutes: 10,
   minFreeHoursForAutoDownload: 12,
@@ -572,14 +584,17 @@ const refreshQbTorrents = async ({ silent = false } = {}) => {
     await client.login();
     state.qbTorrents = await client.listTorrents("all");
     state.qbSeedingSummary = globalThis.PT_AGENT_QB.summarizeMteamSeeding(state.qbTorrents);
+    const downloadingCount = state.qbTorrents.filter(isActiveDownload).length;
+    debug("qb:refreshed", { tasks: state.qbTorrents.length, downloading: downloadingCount, evaluated: state.evaluated.length });
     renderQbTorrents();
     await loadAuditEvents();
+    // qB 数据到位后必定重渲染资源列表，让「下载中/已下载」状态即时生效（修复重开插件后状态丢失）。
     if (state.evaluated.length) renderList();
     setQbStatus("已连接", "ok");
-    const downloadingCount = state.qbTorrents.filter(isActiveDownload).length;
     if (!silent) setQbMessage(`qBittorrent 当前有 ${downloadingCount} 个下载中任务。`, "success");
     return true;
   } catch (error) {
+    debug("qb:refresh-failed", String(error?.message || error));
     setQbStatus("连接失败", "bad");
     setQbMessage(error.message || String(error), "error");
     return false;
@@ -859,8 +874,21 @@ const renderList = () => {
     .filter((item) => state.filter === "all" || item.decision === state.filter)
     .sort((a, b) => freeRemainingSortValue(b) - freeRemainingSortValue(a));
 
+  const matchedInQb = state.qbTorrents.length
+    ? rows.filter((item) => qbResourceStatus(item)).length
+    : 0;
+  debug("render:list", {
+    evaluated: state.evaluated.length,
+    rows: rows.length,
+    filter: state.filter,
+    qbTorrents: state.qbTorrents.length,
+    matchedInQb
+  });
+
   if (!rows.length) {
-    list.innerHTML = `<div class="empty">当前筛选没有资源。</div>`;
+    list.innerHTML = state.evaluated.length
+      ? `<div class="empty">当前「${state.filter}」筛选下没有资源，点顶部标签切换。</div>`
+      : `<div class="empty">点击右上角「重新扫描」加载 M-Team 当前 Free 资源。</div>`;
     return;
   }
 
@@ -954,6 +982,7 @@ const escapeHtml = (value) => {
 };
 
 const runScan = async () => {
+  debug("scan:start");
   $("list").innerHTML = `<div class="empty">正在从 M-Team API 加载当前 Free…</div>`;
   try {
     const settings = state.policySettings || await getSettings();
@@ -962,6 +991,12 @@ const runScan = async () => {
       fetchMteamAccount(),
       fetchMteamFreeCatalog()
     ]);
+    debug("scan:fetched", {
+      account: accountResult.status,
+      catalog: catalogResult.status,
+      catalogCount: catalogResult.status === "fulfilled" ? catalogResult.value?.torrents?.length : null,
+      catalogError: catalogResult.status === "rejected" ? String(catalogResult.reason?.message || catalogResult.reason) : null
+    });
     if (catalogResult.status === "fulfilled") {
       const catalog = catalogResult.value;
       state.scan = {
@@ -1018,8 +1053,10 @@ const runScan = async () => {
     $("pageInfo").textContent = catalogStats
       ? `M-Team 当前 Free · ${catalogStats.total} 个资源 · 普通区 ${catalogStats.normalPages} 页 / 成人区 ${catalogStats.adultPages} 页`
       : `${state.scan?.page?.title || "当前页面"} · ${state.evaluated.length} 个资源`;
+    debug("scan:evaluated", { evaluated: state.evaluated.length, filter: state.filter, qbTorrents: state.qbTorrents.length });
     renderList();
   } catch (error) {
+    debug("scan:error", String(error?.message || error));
     $("list").innerHTML = `<div class="empty">扫描失败：${escapeHtml(error.message || String(error))}</div>`;
   }
 };
@@ -1105,9 +1142,28 @@ const exportAuditJson = () => {
   URL.revokeObjectURL(url);
 };
 
+const applyTheme = (theme) => {
+  const resolved = theme === "light" ? "light" : "dark";
+  document.documentElement.dataset.theme = resolved;
+  const btn = $("themeBtn");
+  if (btn) btn.textContent = resolved === "light" ? "☀️" : "🌙";
+};
+
+const initTheme = async () => {
+  const stored = await chrome.storage.local.get("ptAgentTheme");
+  applyTheme(stored.ptAgentTheme || "dark");
+  $("themeBtn")?.addEventListener("click", async () => {
+    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    applyTheme(next);
+    await chrome.storage.local.set({ ptAgentTheme: next });
+  });
+};
+
 document.addEventListener("DOMContentLoaded", async () => {
   const params = new URLSearchParams(location.search);
   const isDashboard = params.get("mode") === "dashboard";
+  debug("boot", { mode: isDashboard ? "dashboard" : "popup", url: location.href });
+  await initTheme();
   document.documentElement.className = isDashboard ? "mode-dashboard" : "mode-popup";
   document.body.className = isDashboard ? "mode-dashboard" : "mode-popup";
   const sourceTabId = Number(new URLSearchParams(location.search).get("sourceTabId"));
@@ -1152,6 +1208,7 @@ document.addEventListener("DOMContentLoaded", async () => {
       renderList();
     });
   });
+  debug("boot:kickoff", { hasQbPassword: Boolean(state.qbSettings.password) });
   runScan();
   if (state.qbSettings.password) refreshQbTorrents({ silent: true });
 });

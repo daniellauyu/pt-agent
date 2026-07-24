@@ -29,8 +29,8 @@ test("keeps the toolbar popup as the compact mode", () => {
   assert.equal(manifest.action.default_popup, "popup.html");
 });
 
-test("publishes the pure local-mode extension as version 0.11.0", () => {
-  assert.equal(manifest.version, "0.11.0");
+test("publishes the local-mode UI refresh as version 0.12.0", () => {
+  assert.equal(manifest.version, "0.12.0");
 });
 
 test("service worker imports and migrates the local downloader preset", () => {

@@ -386,7 +386,7 @@ h2 {
   margin-bottom: 12px;
   padding: 4px;
   display: none;
-  grid-template-columns: repeat(2, 1fr);
+  grid-template-columns: repeat(3, 1fr);
   gap: 4px;
   border: 1px solid var(--border);
   border-radius: var(--radius-sm);
@@ -1586,4 +1586,123 @@ body.mode-popup .audit-row {
 
 body.mode-dashboard #fullscreenBtn {
   display: none;
+}
+
+/* ============ 日志页 ============ */
+.log-panel {
+  overflow: hidden;
+}
+
+.log-list {
+  max-height: calc(100vh - 220px);
+  overflow-y: auto;
+}
+
+.log-row {
+  padding: 12px 24px;
+  display: grid;
+  grid-template-columns: 200px minmax(160px, 260px) 1fr;
+  gap: 14px;
+  align-items: start;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 12px;
+}
+
+.log-row:last-child {
+  border-bottom: 0;
+}
+
+.log-time {
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 11px;
+}
+
+.log-tag {
+  overflow: hidden;
+  color: var(--accent);
+  font-weight: 700;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-overflow: ellipsis;
+}
+
+.log-row.error .log-tag {
+  color: var(--danger);
+}
+
+.log-row.warn .log-tag {
+  color: var(--amber);
+}
+
+.log-data {
+  margin: 0;
+  overflow-x: auto;
+  color: var(--text-soft);
+  background: var(--panel-2);
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  padding: 8px 10px;
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.log-row.error .log-data {
+  border-color: color-mix(in srgb, var(--danger) 40%, transparent);
+  background: color-mix(in srgb, var(--danger) 8%, var(--panel-2));
+}
+
+body.mode-popup .log-panel {
+  margin-top: 10px;
+}
+
+body.mode-popup .log-list {
+  max-height: 420px;
+}
+
+body.mode-popup .log-row {
+  padding: 10px 14px;
+  grid-template-columns: 1fr;
+  gap: 6px;
+}
+
+/* ============ 全局浮层提示（toast） ============ */
+.pt-toast {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 200;
+  max-width: 460px;
+  padding: 14px 18px;
+  border-radius: var(--radius);
+  border: 1px solid var(--border);
+  background: var(--panel);
+  color: var(--text);
+  box-shadow: var(--shadow);
+  font-size: 13px;
+  line-height: 1.55;
+  white-space: pre-line;
+  opacity: 0;
+  transform: translateY(12px);
+  transition: opacity 0.2s ease, transform 0.2s ease;
+  pointer-events: none;
+}
+
+.pt-toast.show {
+  opacity: 1;
+  transform: translateY(0);
+  cursor: pointer;
+  pointer-events: auto;
+}
+
+.pt-toast.success {
+  border-color: color-mix(in srgb, var(--ok) 45%, transparent);
+}
+
+.pt-toast.error {
+  border-color: color-mix(in srgb, var(--danger) 50%, transparent);
+  color: var(--danger);
+  background: color-mix(in srgb, var(--danger) 8%, var(--panel));
 }

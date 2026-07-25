@@ -25,6 +25,10 @@
           <span class="nav-icon">↓</span>
           下载中
         </button>
+        <button id="logsNav" class="nav-item" type="button" data-view="logs">
+          <span class="nav-icon">☰</span>
+          日志
+        </button>
         <div class="nav-label">当前站点</div>
         <div class="sidebar-site">
           <span class="site-dot"></span>
@@ -61,6 +65,7 @@
         <div class="view-switcher" aria-label="页面菜单">
           <button class="view-switch active" type="button" data-view="resources">可下载资源</button>
           <button class="view-switch" type="button" data-view="downloads">下载中</button>
+          <button class="view-switch" type="button" data-view="logs">日志</button>
         </div>
 
         <div id="resourcesView" class="workspace-view active" data-view-panel="resources">
@@ -234,6 +239,26 @@
           </div>
           <div id="auditList" class="audit-list">
             <div class="empty compact-empty">暂无下载和保护动作记录。</div>
+          </div>
+        </section>
+        </div>
+
+        <div id="logsView" class="workspace-view" data-view-panel="logs">
+        <section class="log-panel panel">
+          <div class="resource-head">
+            <div>
+              <div class="panel-kicker">DEBUG LOG</div>
+              <h2>运行日志</h2>
+            </div>
+            <div class="export-actions">
+              <span id="logCount" class="site-status ok">0 条</span>
+              <button id="refreshLogsBtn" class="btn btn-quiet" type="button">刷新</button>
+              <button id="exportLogsBtn" class="btn btn-quiet" type="button">导出日志</button>
+              <button id="clearLogsBtn" class="btn btn-quiet" type="button">清空</button>
+            </div>
+          </div>
+          <div id="logList" class="log-list">
+            <div class="empty compact-empty">暂无日志。发送种子、扫描等动作会在此记录。</div>
           </div>
         </section>
         </div>

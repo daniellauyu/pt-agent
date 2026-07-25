@@ -136,6 +136,27 @@ test("sends recommended torrents directly to qBittorrent", () => {
   assert.match(script, /client\.addTorrent\(\{/);
 });
 
+test("ships a persistent debug log page", () => {
+  const html = fs.readFileSync(path.join(extensionDir, "popup.html"), "utf8");
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  assert.match(html, /id="logsView"/);
+  assert.match(html, /id="logList"/);
+  assert.match(html, /id="clearLogsBtn"/);
+  assert.match(html, /data-view="logs"/);
+  // 日志持久化到 chrome.storage，并在启动时载入历史。
+  assert.match(script, /ptAgentDebugLog/);
+  assert.match(script, /const loadDebugLog = async/);
+  assert.match(script, /const renderLogs =/);
+});
+
+test("surfaces enqueue failures via a global toast and post-send verification", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  assert.match(script, /const showToast =/);
+  assert.match(script, /showToast\(`❌ 发送失败/);
+  assert.match(script, /qb:verify/);
+  assert.match(script, /未出现任务/);
+});
+
 test("loads the M-Team historical backfill helper before the popup logic", () => {
   const html = fs.readFileSync(path.join(extensionDir, "popup.html"), "utf8");
   assert.ok(

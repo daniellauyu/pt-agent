@@ -14,16 +14,105 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 
-// 生命周期调试日志：打开插件 DevTools 控制台可见 [PT] 前缀记录，用于排查数据闪现/状态异常。
+// 持久化调试日志：写入 chrome.storage（环形缓冲 500 条），并在独立「日志」页展示；同时输出到控制台。
+const DEBUG_LOG_CAP = 500;
+let debugBuffer = [];
+let debugPersistTimer = null;
+
+const persistDebugLog = () => {
+  clearTimeout(debugPersistTimer);
+  debugPersistTimer = setTimeout(() => {
+    try {
+      chrome.storage.local.set({ ptAgentDebugLog: debugBuffer.slice(0, DEBUG_LOG_CAP) });
+    } catch (_) {}
+  }, 300);
+};
+
 const debug = (tag, data) => {
+  const entry = { ts: new Date().toISOString(), tag, data: data === undefined ? null : data };
+  debugBuffer.unshift(entry);
+  if (debugBuffer.length > DEBUG_LOG_CAP) debugBuffer.length = DEBUG_LOG_CAP;
+  persistDebugLog();
+  if (document.getElementById("logList")) renderLogs();
   try {
-    const ts = new Date().toISOString().slice(11, 23);
-    if (data === undefined) {
-      console.log(`%c[PT ${ts}] ${tag}`, "color:#d4a24e;font-weight:600");
-    } else {
-      console.log(`%c[PT ${ts}] ${tag}`, "color:#d4a24e;font-weight:600", data);
-    }
+    const short = entry.ts.slice(11, 23);
+    if (data === undefined) console.log(`%c[PT ${short}] ${tag}`, "color:#d4a24e;font-weight:600");
+    else console.log(`%c[PT ${short}] ${tag}`, "color:#d4a24e;font-weight:600", data);
   } catch (_) {}
+};
+
+const loadDebugLog = async () => {
+  try {
+    const stored = await chrome.storage.local.get("ptAgentDebugLog");
+    const history = Array.isArray(stored.ptAgentDebugLog) ? stored.ptAgentDebugLog : [];
+    // 合并本次启动已产生的条目（在前）与历史（在后），按容量截断。
+    debugBuffer = [...debugBuffer, ...history].slice(0, DEBUG_LOG_CAP);
+  } catch (_) {}
+};
+
+const LOG_LEVEL = (tag) => {
+  const t = String(tag);
+  if (/error|failed|suspect|enqueue-error/.test(t)) return "error";
+  if (/verify|refresh-failed|warn/.test(t)) return "warn";
+  return "info";
+};
+
+const renderLogs = () => {
+  const list = document.getElementById("logList");
+  if (!list) return;
+  const countBadge = document.getElementById("logCount");
+  if (countBadge) countBadge.textContent = `${debugBuffer.length} 条`;
+  if (!debugBuffer.length) {
+    list.innerHTML = `<div class="empty compact-empty">暂无日志。发送种子、扫描等动作会在此记录。</div>`;
+    return;
+  }
+  list.innerHTML = debugBuffer.map((entry) => {
+    const time = String(entry.ts).replace("T", " ").slice(0, 23);
+    const level = LOG_LEVEL(entry.tag);
+    const dataText = entry.data === null || entry.data === undefined
+      ? ""
+      : typeof entry.data === "string"
+        ? entry.data
+        : JSON.stringify(entry.data, null, 2);
+    return `
+      <div class="log-row ${level}">
+        <span class="log-time">${escapeHtml(time)}</span>
+        <span class="log-tag">${escapeHtml(entry.tag)}</span>
+        ${dataText ? `<pre class="log-data">${escapeHtml(dataText)}</pre>` : ""}
+      </div>
+    `;
+  }).join("");
+};
+
+const clearLogs = async () => {
+  debugBuffer = [];
+  try { await chrome.storage.local.set({ ptAgentDebugLog: [] }); } catch (_) {}
+  renderLogs();
+};
+
+const exportLogs = () => {
+  const blob = new Blob([JSON.stringify(debugBuffer, null, 2)], { type: "application/json" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = `pt-agent-log-${Date.now()}.json`;
+  a.click();
+  URL.revokeObjectURL(url);
+};
+
+// 全局浮层提示：不依赖当前视图，成功/失败都能看到（此前错误只写在「下载中」页，资源页点下载看不到）。
+const showToast = (message, type = "info", ms = type === "error" ? 12000 : 4000) => {
+  let toast = document.getElementById("ptToast");
+  if (!toast) {
+    toast = document.createElement("div");
+    toast.id = "ptToast";
+    document.body.appendChild(toast);
+    toast.addEventListener("click", () => { toast.className = "pt-toast"; });
+  }
+  toast.textContent = message;
+  toast.className = `pt-toast show ${type}`;
+  clearTimeout(showToast._timer);
+  showToast._timer = setTimeout(() => { toast.className = "pt-toast"; }, ms);
 };
 
 const defaultSettings = {
@@ -619,24 +708,36 @@ const testQbConnection = async () => {
   }
 };
 
-// 在浏览器侧抓取 .torrent 文件字节（插件有 M-Team 权限与用户会话），失败则返回 null 由调用方回退。
+// 在浏览器侧抓取 .torrent 文件字节（插件有 M-Team 权限与用户会话）。抓取失败/内容不是种子时直接抛错，
+// 避免静默回退到「让 qB 服务器端去抓链接」这条已知会失败的路径而造成假成功。
 const fetchTorrentFile = async (downloadUrl) => {
+  const headers = {};
   try {
-    const response = await fetch(downloadUrl, { credentials: "omit" });
-    debug("qb:torrent-fetch", { ok: response.ok, status: response.status, type: response.headers.get("content-type") });
-    if (!response.ok) return null;
-    const blob = await response.blob();
-    // 校验确实是种子文件：bittorrent 内容类型或 bencode 起始 "d..." 或大小合理。
-    const contentType = (response.headers.get("content-type") || "").toLowerCase();
-    if (contentType.includes("html") || blob.size < 40) {
-      debug("qb:torrent-fetch-suspect", { size: blob.size, contentType });
-      return null;
+    const host = new URL(downloadUrl).hostname;
+    if (host.endsWith("m-team.cc") && state.qbSettings?.mteamApiKey) {
+      headers["x-api-key"] = state.qbSettings.mteamApiKey;
     }
-    return blob;
-  } catch (error) {
-    debug("qb:torrent-fetch-error", String(error?.message || error));
-    return null;
+  } catch (_) {}
+  const response = await fetch(downloadUrl, { credentials: "omit", headers });
+  const contentType = (response.headers.get("content-type") || "").toLowerCase();
+  const blob = await response.blob();
+  debug("qb:torrent-fetch", {
+    url: String(downloadUrl).slice(0, 140),
+    ok: response.ok,
+    status: response.status,
+    contentType,
+    size: blob.size
+  });
+  if (!response.ok) {
+    throw new Error(`浏览器下载 .torrent 失败（HTTP ${response.status}）`);
   }
+  // 种子文件是 bencode（以 "d" 开头），几十 KB 起；返回 HTML/JSON 或过小说明拿到的是错误页而非种子。
+  if (contentType.includes("html") || contentType.includes("json") || blob.size < 50) {
+    const preview = (await blob.slice(0, 200).text()).replace(/\s+/g, " ").slice(0, 160);
+    debug("qb:torrent-fetch-suspect", { size: blob.size, contentType, preview });
+    throw new Error(`拿到的不是种子文件（${contentType || "unknown"}, ${blob.size}B）：${preview}`);
+  }
+  return blob;
 };
 
 const enqueueTorrentDirectToQb = async (torrent, downloadUrl) => {
@@ -648,17 +749,17 @@ const enqueueTorrentDirectToQb = async (torrent, downloadUrl) => {
   const tag = globalThis.PT_AGENT_QB.torrentTags(torrent.freeEndAt || "");
   const file = await fetchTorrentFile(downloadUrl);
   const safeName = String(torrent.title || torrent.torrentId || "download").replace(/[^\w.-]+/g, "_").slice(0, 80);
-  debug("qb:add", { route: file ? "file-upload" : "url", size: file?.size || 0, title: torrent.title });
-  await client.addTorrent({
-    url: downloadUrl,
+  debug("qb:add", { route: "file-upload", size: file.size, filename: `${safeName}.torrent`, savePath });
+  const addResult = await client.addTorrent({
     file,
     filename: `${safeName}.torrent`,
     tag,
     savePath,
     category: "PT_AGENT"
   });
+  debug("qb:add-result", addResult);
   return {
-    route: file ? "file" : "url",
+    route: "file",
     evaluation: {
       decision: torrent.decision,
       score: Number(torrent.score || 0)
@@ -690,16 +791,27 @@ const enqueueTorrent = async (torrent, { manualOverride = false } = {}) => {
       deleteFiles: false
     }).catch(() => {});
     state.qbPushStatus.set(key, "success");
-    setQbMessage(
-      manualOverride
-        ? `已按你的判断手动发送：${torrent.title}；分类：PT_AGENT`
-        : `已发送到 qBittorrent：${torrent.title}；分类：PT_AGENT`,
-      "success"
-    );
-    setTimeout(() => refreshQbTorrents({ silent: true }), 1000);
+    const okMessage = manualOverride
+      ? `已按你的判断手动发送：${torrent.title}`
+      : `已发送到 qBittorrent：${torrent.title}`;
+    setQbMessage(`${okMessage}；分类：PT_AGENT`, "success");
+    showToast(`✅ ${okMessage}`, "success");
+    // 发送后验证：qB 可能回「Ok」却因保存目录无效/重复/被拒而不真正添加，此处兜底提示，避免假成功。
+    setTimeout(async () => {
+      await refreshQbTorrents({ silent: true });
+      const landed = findQbTorrent(torrent);
+      debug("qb:verify", { title: torrent.title, landedInQb: Boolean(landed), qbTorrents: state.qbTorrents.length });
+      if (!landed) {
+        showToast(
+          `⚠️ qB 接受了请求，但未出现任务「${torrent.title}」。可能是：保存目录无效、重复任务、或种子被 qB 拒绝。控制台看 [PT] qb:add-result。`,
+          "error"
+        );
+      }
+    }, 1800);
     return true;
   } catch (error) {
     state.qbPushStatus.set(key, "error");
+    const reason = error.message || String(error);
     await appendAuditEvent({
       action: "enqueue_error",
       status: "failed",
@@ -708,10 +820,12 @@ const enqueueTorrent = async (torrent, { manualOverride = false } = {}) => {
       torrentId: torrent.torrentId || "",
       deadline: formatDeadline(torrent.freeEndAt),
       progress: 0,
-      reason: error.message || String(error),
+      reason,
       deleteFiles: false
     }).catch(() => {});
-    setQbMessage(`${torrent.title}：${error.message || String(error)}`, "error");
+    setQbMessage(`${torrent.title}：${reason}`, "error");
+    showToast(`❌ 发送失败：${torrent.title}\n${reason}`, "error");
+    debug("qb:enqueue-error", reason);
     return false;
   } finally {
     renderList();
@@ -1120,7 +1234,7 @@ const openFullscreenDashboard = async () => {
 };
 
 const switchView = (view) => {
-  state.activeView = view === "downloads" ? "downloads" : "resources";
+  state.activeView = ["downloads", "logs"].includes(view) ? view : "resources";
   document.querySelectorAll("[data-view-panel]").forEach((panel) => {
     panel.classList.toggle("active", panel.dataset.viewPanel === state.activeView);
   });
@@ -1130,6 +1244,7 @@ const switchView = (view) => {
   if (state.activeView === "downloads" && state.qbSettings?.password) {
     refreshQbTorrents({ silent: true });
   }
+  if (state.activeView === "logs") renderLogs();
 };
 
 const exportPayload = () => {
@@ -1190,6 +1305,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   const params = new URLSearchParams(location.search);
   const isDashboard = params.get("mode") === "dashboard";
   debug("boot", { mode: isDashboard ? "dashboard" : "popup", url: location.href });
+  await loadDebugLog();
   await initTheme();
   document.documentElement.className = isDashboard ? "mode-dashboard" : "mode-popup";
   document.body.className = isDashboard ? "mode-dashboard" : "mode-popup";
@@ -1224,6 +1340,10 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("copyBtn").addEventListener("click", copyJson);
   $("downloadBtn").addEventListener("click", downloadJson);
   $("exportAuditBtn").addEventListener("click", exportAuditJson);
+  $("refreshLogsBtn").addEventListener("click", renderLogs);
+  $("exportLogsBtn").addEventListener("click", exportLogs);
+  $("clearLogsBtn").addEventListener("click", clearLogs);
+  renderLogs();
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.addEventListener("click", () => switchView(button.dataset.view));
   });

@@ -1,4 +1,6 @@
-importScripts("private-config.js", "guard-engine.js", "qb-client.js");
+importScripts("logger.js", "private-config.js", "guard-engine.js", "qb-client.js");
+
+globalThis.PT_AGENT_LOGGER.installStorageOwner();
 
 chrome.runtime.onInstalled.addListener(() => {
   chrome.storage.local.get(["ptAgentSettings", "ptAgentQbSettings"], (stored) => {
@@ -44,18 +46,8 @@ chrome.runtime.onStartup.addListener(() => {
   chrome.alarms.create("ptAgentFreeGuard", { periodInMinutes: 1 });
 });
 
-const appendAuditEvent = async (event) => {
-  const stored = await chrome.storage.local.get("ptAgentAuditLog");
-  const events = Array.isArray(stored.ptAgentAuditLog) ? stored.ptAgentAuditLog : [];
-  events.unshift({
-    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    timestamp: new Date().toISOString(),
-    ...event
-  });
-  await chrome.storage.local.set({ ptAgentAuditLog: events.slice(0, 500) });
-};
-
 const runFreeGuard = async () => {
+  const operationId = globalThis.PT_AGENT_LOGGER.newOperationId();
   const stored = await chrome.storage.local.get([
     "ptAgentSettings",
     "ptAgentQbSettings",
@@ -80,7 +72,12 @@ const runFreeGuard = async () => {
   if (!qbSettings.address || !qbSettings.username || !qbSettings.password) return;
 
   try {
-    const client = globalThis.PT_AGENT_QB.createClient(qbSettings);
+    globalThis.PT_AGENT_LOGGER.legacy("guard:scan-start", null, { operationId });
+    const client = globalThis.PT_AGENT_QB.createClient(
+      qbSettings,
+      undefined,
+      (event, data) => globalThis.PT_AGENT_LOGGER.legacy(event, data, { operationId })
+    );
     await client.login();
     const torrents = await client.listTorrents("all");
     const previousStates = stored.ptAgentGuardStates || {};
@@ -94,7 +91,8 @@ const runFreeGuard = async () => {
       const previous = previousStates[torrent.hash];
       nextStates[torrent.hash] = result.status;
       if (previous !== result.status && ["cannot_finish", "expiring", "expired", "missing_deadline"].includes(result.status)) {
-        await appendAuditEvent({
+        await globalThis.PT_AGENT_LOGGER.appendAudit({
+          operation_id: operationId,
           action: "guard_warning",
           status: result.status,
           hash: torrent.hash,
@@ -118,7 +116,8 @@ const runFreeGuard = async () => {
       ) {
         await client.deleteTorrents(torrent.hash, true);
         nextStates[torrent.hash] = "deleted";
-        await appendAuditEvent({
+        await globalThis.PT_AGENT_LOGGER.appendAudit({
+          operation_id: operationId,
           action: "guard_delete",
           status: "deleted",
           hash: torrent.hash,
@@ -131,8 +130,19 @@ const runFreeGuard = async () => {
       }
     }
     await chrome.storage.local.set({ ptAgentGuardStates: nextStates });
+    globalThis.PT_AGENT_LOGGER.legacy(
+      "guard:scan-completed",
+      { torrents: torrents.length },
+      { operationId }
+    );
   } catch (error) {
-    await appendAuditEvent({
+    globalThis.PT_AGENT_LOGGER.legacy(
+      "guard:scan-error",
+      { error: error.message || String(error) },
+      { operationId }
+    );
+    await globalThis.PT_AGENT_LOGGER.appendAudit({
+      operation_id: operationId,
       action: "guard_error",
       status: "failed",
       reason: error.message || String(error),

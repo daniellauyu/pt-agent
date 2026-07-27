@@ -18,9 +18,9 @@ test("loads M-Team account, catalog, and download tokens directly from the exten
   const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
   assert.match(script, /const mteamRequest = async/);
   assert.match(script, /PT_AGENT_PRIVATE_CONFIG\.mteamApiUrl/);
-  assert.match(script, /mteamRequest\("\/api\/member\/profile"\)/);
+  assert.match(script, /mteamRequest\("\/api\/member\/profile"/);
   assert.match(script, /mteamRequest\("\/api\/torrent\/search"/);
-  assert.match(script, /mteamRequest\("\/api\/torrent\/genDlToken"/);
+  assert.match(script, /mteamRequest\(\s*"\/api\/torrent\/genDlToken"/);
   assert.match(script, /正在从 M-Team API 加载当前 Free/);
 });
 
@@ -115,6 +115,38 @@ test("loads the admission and Free Guard engines before popup logic", () => {
   const popupIndex = html.indexOf('src="popup.js"');
   assert.ok(html.indexOf('src="admission-engine.js"') < popupIndex);
   assert.ok(html.indexOf('src="guard-engine.js"') < popupIndex);
+  assert.ok(html.indexOf('src="exclusion-store.js"') < popupIndex);
+});
+
+test("persists excluded torrents, removes them from decisions, and offers restore", () => {
+  const html = fs.readFileSync(path.join(extensionDir, "popup.html"), "utf8");
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  assert.match(html, /id="excludedList"/);
+  assert.match(html, /排除并删除|已排除种子/);
+  assert.match(script, /\.filter\(\(torrent\) => !isTorrentExcluded\(torrent\)\)\s*\.map\(\(torrent\) => evaluateTorrent/);
+  assert.match(script, /torrent\.decision === "recommend" && !isTorrentExcluded\(torrent\)/);
+  assert.match(script, /deleteTorrents\(torrent\.hash, true\)/);
+  assert.match(script, /restoreExcludedTorrent/);
+});
+
+test("offers a standalone staged qBittorrent diagnostic", () => {
+  const html = fs.readFileSync(path.join(extensionDir, "popup.html"), "utf8");
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  assert.match(html, /id="diagnoseQbBtn"/);
+  assert.match(html, /id="qbDiagnostic"/);
+  assert.match(script, /const diagnoseQbConnection = async/);
+  assert.match(script, /client\.diagnose\(\)/);
+  assert.doesNotMatch(
+    script.match(/const testQbConnection = async[\s\S]*?\n};/)?.[0] || "",
+    /refreshQbTorrents/
+  );
+});
+
+test("renders lifecycle audit events in explicit newest-first order", () => {
+  const html = fs.readFileSync(path.join(extensionDir, "popup.html"), "utf8");
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  assert.ok(html.indexOf('src="audit-utils.js"') < html.indexOf('src="popup.js"'));
+  assert.match(script, /PT_AGENT_AUDIT\.newestFirst\(state\.auditEvents\)/);
 });
 
 test("runs in pure local mode without any PT Core coupling", () => {
@@ -147,6 +179,22 @@ test("ships a persistent debug log page", () => {
   assert.match(script, /ptAgentDebugLog/);
   assert.match(script, /const loadDebugLog = async/);
   assert.match(script, /const renderLogs =/);
+  assert.match(script, /PT_AGENT_LOGGER\.write/);
+  assert.ok(
+    html.indexOf('src="logger.js"') < html.indexOf('src="popup.js"'),
+    "the shared logger must load before popup logic"
+  );
+});
+
+test("never writes M-Team download tokens or third-party response bodies to diagnostics", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  assert.match(
+    script,
+    /debug\(\s*"mteam:gen-dl-token",\s*\{\s*torrentId:\s*torrent\.torrentId,\s*generated:\s*Boolean\(downloadUrl\)\s*\},\s*operationId\s*\)/
+  );
+  assert.doesNotMatch(script, /mteam:gen-dl-token",\s*\{[^}]*downloadUrl:/);
+  assert.doesNotMatch(script, /mteam:res-error"[\s\S]{0,140}\bbody:/);
+  assert.doesNotMatch(script, /qb:add"[\s\S]{0,120}downloadUrl:\s*String/);
 });
 
 test("surfaces enqueue failures via a global toast and post-send verification", () => {

@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "PT Agent Helper",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "description": "聚合 M-Team Free 资源，安全推送 qBittorrent，并同步 PT Core 生命周期和新手考核数据。",
   "permissions": ["activeTab", "alarms", "scripting", "storage"],
   "host_permissions": [

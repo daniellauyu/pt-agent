@@ -29,13 +29,14 @@ test("keeps the toolbar popup as the compact mode", () => {
   assert.equal(manifest.action.default_popup, "popup.html");
 });
 
-test("publishes the persistent log page as version 0.13.0", () => {
-  assert.equal(manifest.version, "0.13.0");
+test("publishes the torrent exclusion and qB diagnostic update as version 0.13.1", () => {
+  assert.equal(manifest.version, "0.13.1");
 });
 
 test("service worker imports and migrates the local downloader preset", () => {
   const background = fs.readFileSync(path.join(__dirname, "background.js"), "utf8");
-  assert.match(background, /importScripts\("private-config\.js",\s*"guard-engine\.js",\s*"qb-client\.js"\)/);
+  assert.match(background, /importScripts\("logger\.js",\s*"private-config\.js",\s*"guard-engine\.js",\s*"qb-client\.js"\)/);
+  assert.match(background, /PT_AGENT_LOGGER\.installStorageOwner\(\)/);
   assert.match(background, /password:\s*privateConfig\.qbPassword/);
   assert.match(background, /mteamApiKey:\s*privateConfig\.mteamApiKey/);
   assert.doesNotMatch(background, /ptAgentCoreSettings/);

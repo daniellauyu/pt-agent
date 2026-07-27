@@ -5,18 +5,24 @@ globalThis.PT_AGENT_QB = (() => {
     return new URL(`api/v2/${String(path).replace(/^\/+/, "")}`, normalizeAddress(settings.address)).toString();
   };
 
-  const responseError = async (response, action) => {
-    const detail = (await response.text()).trim();
-    throw new Error(`${action}失败（HTTP ${response.status}）${detail ? `：${detail}` : ""}`);
-  };
-
-  const createClient = (settings, fetchImpl = globalThis.fetch.bind(globalThis)) => {
+  const createClient = (settings, fetchImpl = globalThis.fetch.bind(globalThis), onLog = () => {}) => {
     const request = async (path, options = {}) => {
-      const response = await fetchImpl(endpoint(settings, path), {
-        credentials: "include",
-        ...options
-      });
-      if (!response.ok) await responseError(response, "qBittorrent 请求");
+      const method = options.method || "GET";
+      const url = endpoint(settings, path);
+      onLog("qb:req", { method, path, url });
+      let response;
+      try {
+        response = await fetchImpl(url, { credentials: "include", ...options });
+      } catch (error) {
+        onLog("qb:req-error", { path, error: String(error?.message || error) });
+        throw new Error(`qBittorrent 无法连接（${String(error?.message || error)}）`);
+      }
+      onLog("qb:res", { path, status: response.status, ok: response.ok });
+      if (!response.ok) {
+        const detail = (await response.text()).trim();
+        onLog("qb:res-error", { path, status: response.status, detailLength: detail.length });
+        throw new Error(`qBittorrent 请求失败（HTTP ${response.status}）`);
+      }
       return response;
     };
 
@@ -52,16 +58,31 @@ globalThis.PT_AGENT_QB = (() => {
       if (tag) body.set("tags", tag);
       if (savePath) body.set("savepath", savePath);
       if (category) body.set("category", category);
+      onLog("qb:add-request", { route: file ? "file" : "url", filename: file ? filename : undefined, fileSize: file?.size, tag, savePath, category });
       const response = await request("torrents/add", { method: "POST", body });
       const contentType = response.headers.get("content-type") || "";
       if (contentType.includes("application/json")) {
         const result = await response.json();
+        onLog("qb:add-response", {
+          contentType,
+          successCount: result.success_count,
+          failureCount: result.failure_count
+        });
         const success = (result.success_count ?? 0) > 0 && (result.failure_count ?? 0) === 0;
-        if (!success) throw new Error(`qBittorrent 添加失败：${JSON.stringify(result)}`);
+        if (!success) {
+          throw new Error(
+            `qBittorrent 添加失败（成功 ${result.success_count ?? 0}，失败 ${result.failure_count ?? 0}）`
+          );
+        }
         return result;
       }
       const result = (await response.text()).trim();
-      if (result !== "Ok.") throw new Error(`qBittorrent 添加失败：${result || "未知错误"}`);
+      onLog("qb:add-response", {
+        contentType,
+        accepted: result === "Ok.",
+        responseLength: result.length
+      });
+      if (result !== "Ok.") throw new Error("qBittorrent 添加失败（响应未确认成功）");
       return { success_count: 1 };
     };
 
@@ -119,7 +140,63 @@ globalThis.PT_AGENT_QB = (() => {
       return true;
     };
 
+    const diagnose = async () => {
+      const stages = [];
+      const fail = (failedStage, label, error) => {
+        stages.push({
+          key: failedStage,
+          label,
+          status: "error",
+          detail: String(error?.message || error || "未知错误")
+        });
+        return { ok: false, failedStage, stages };
+      };
+
+      const probeStartedAt = Date.now();
+      try {
+        const response = await fetchImpl(endpoint(settings, "app/version"), {
+          credentials: "include",
+          cache: "no-store"
+        });
+        stages.push({
+          key: "reachability",
+          label: "网络可达性",
+          status: "ok",
+          detail: `收到 HTTP ${response.status} · ${Date.now() - probeStartedAt} ms`
+        });
+      } catch (error) {
+        return fail("reachability", "网络可达性", error);
+      }
+
+      try {
+        await login();
+        stages.push({
+          key: "login",
+          label: "登录鉴权",
+          status: "ok",
+          detail: "账号密码验证通过"
+        });
+      } catch (error) {
+        return fail("login", "登录鉴权", error);
+      }
+
+      try {
+        const version = await getVersion();
+        if (!version) throw new Error("版本接口返回空响应");
+        stages.push({
+          key: "api",
+          label: "Web API",
+          status: "ok",
+          detail: `qBittorrent ${version}`
+        });
+        return { ok: true, version, stages };
+      } catch (error) {
+        return fail("api", "Web API", error);
+      }
+    };
+
     return {
+      diagnose,
       login,
       getVersion,
       addTorrent,
@@ -147,6 +224,17 @@ globalThis.PT_AGENT_QB = (() => {
     return ["ptagent", deadline ? `ptagent-free-end=${deadline}` : ""]
       .filter(Boolean)
       .join(", ");
+  };
+
+  const sourceTag = (site, torrentId) => {
+    const normalizedSite = String(site || "").trim().toLowerCase();
+    const normalizedId = String(torrentId || "").trim();
+    return normalizedSite && normalizedId ? `ptagent-source=${normalizedSite}:${normalizedId}` : "";
+  };
+
+  const sourceFromTags = (tags) => {
+    const match = String(tags || "").match(/(?:^|,\s*)ptagent-source=([^,:\s]+):([^,\s]+)/i);
+    return match ? { site: match[1].toLowerCase(), torrentId: match[2] } : null;
   };
 
   const normalizeTorrentName = (value) => {
@@ -194,6 +282,8 @@ globalThis.PT_AGENT_QB = (() => {
     findMatchingTorrent,
     normalizeAddress,
     normalizeTorrentName,
+    sourceFromTags,
+    sourceTag,
     summarizeMteamSeeding,
     torrentTags
   };

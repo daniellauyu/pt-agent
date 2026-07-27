@@ -165,7 +165,8 @@
             </div>
             <div class="export-actions">
               <span id="qbStatus" class="site-status bad">未连接</span>
-              <button id="testQbBtn" class="btn btn-quiet" type="button">测试连接</button>
+              <button id="testQbBtn" class="btn btn-quiet" type="button">测试登录</button>
+              <button id="diagnoseQbBtn" class="btn btn-quiet" type="button">独立诊断</button>
               <button id="backfillDeadlineBtn" class="btn btn-quiet" type="button">回填下载中截止</button>
               <button id="refreshQbBtn" class="btn btn-quiet" type="button">刷新任务</button>
             </div>
@@ -197,6 +198,7 @@
           <div id="qbMessage" class="downloader-message">
             密码和 API Key 仅保存在当前 Chrome 扩展的本地存储中，不会包含在导出的 JSON 里。
           </div>
+          <div id="qbDiagnostic" class="qb-diagnostic" hidden></div>
 
           <div class="guard-settings">
             <div>
@@ -225,9 +227,21 @@
             <span>进度</span>
             <span>下载速度</span>
             <span>Free Guard / 截止时间</span>
+            <span>操作</span>
           </div>
           <div id="qbList" class="qb-list">
             <div class="empty compact-empty">连接 qBittorrent 后显示下载任务。</div>
+          </div>
+
+          <div class="excluded-head">
+            <div>
+              <div class="panel-kicker">EXCLUDED TORRENTS</div>
+              <h3>已排除种子</h3>
+            </div>
+            <span id="excludedCount" class="site-status ok">0 个</span>
+          </div>
+          <div id="excludedList" class="excluded-list">
+            <div class="empty compact-empty">暂无已排除种子。</div>
           </div>
 
           <div class="audit-head">
@@ -257,9 +271,16 @@
               <button id="clearLogsBtn" class="btn btn-quiet" type="button">清空</button>
             </div>
           </div>
+          <div class="log-table-header" aria-hidden="true">
+            <span>请求时间</span>
+            <span>类型</span>
+            <span>内容摘要（点击展开）</span>
+            <span></span>
+          </div>
           <div id="logList" class="log-list">
             <div class="empty compact-empty">暂无日志。发送种子、扫描等动作会在此记录。</div>
           </div>
+          <div id="logPager" class="log-pager"></div>
         </section>
         </div>
       </main>
@@ -267,12 +288,15 @@
   </div>
 
   <script src="private-config.js"></script>
+  <script src="logger.js"></script>
+  <script src="audit-utils.js"></script>
   <script src="assessment-engine.js"></script>
   <script src="admission-engine.js"></script>
   <script src="decision-engine.js"></script>
   <script src="guard-engine.js"></script>
   <script src="mteam-backfill.js"></script>
   <script src="qb-client.js"></script>
+  <script src="exclusion-store.js"></script>
   <script src="popup.js"></script>
 </body>
 </html>

@@ -7,46 +7,46 @@ const state = {
   policySettings: null,
   qbSettings: null,
   qbTorrents: [],
+  excludedTorrents: [],
   qbSeedingSummary: null,
   qbPushStatus: new Map(),
-  auditEvents: []
+  auditEvents: [],
+  operationId: null
 };
 
 const $ = (id) => document.getElementById(id);
+const exclusionStore = globalThis.PT_AGENT_EXCLUSIONS.createStore();
 
-// 持久化调试日志：写入 chrome.storage（环形缓冲 500 条），并在独立「日志」页展示；同时输出到控制台。
-const DEBUG_LOG_CAP = 500;
-let debugBuffer = [];
-let debugPersistTimer = null;
-
-const persistDebugLog = () => {
-  clearTimeout(debugPersistTimer);
-  debugPersistTimer = setTimeout(() => {
-    try {
-      chrome.storage.local.set({ ptAgentDebugLog: debugBuffer.slice(0, DEBUG_LOG_CAP) });
-    } catch (_) {}
-  }, 300);
+const isTorrentExcluded = (torrent) => {
+  return exclusionStore.isExcluded(torrent, state.excludedTorrents);
 };
 
-const debug = (tag, data) => {
-  const entry = { ts: new Date().toISOString(), tag, data: data === undefined ? null : data };
+// ptAgentDebugLog 保持向后兼容；实际持久化由 background 的统一日志服务串行处理。
+const DEBUG_LOG_CAP = 2000;
+let debugBuffer = [];
+
+const debug = (tag, data, operationId = state.operationId) => {
+  const entry = globalThis.PT_AGENT_LOGGER.createEntry({
+    level: globalThis.PT_AGENT_LOGGER.inferLevel(tag),
+    event: tag,
+    data,
+    operationId
+  });
   debugBuffer.unshift(entry);
   if (debugBuffer.length > DEBUG_LOG_CAP) debugBuffer.length = DEBUG_LOG_CAP;
-  persistDebugLog();
-  if (document.getElementById("logList")) renderLogs();
-  try {
-    const short = entry.ts.slice(11, 23);
-    if (data === undefined) console.log(`%c[PT ${short}] ${tag}`, "color:#d4a24e;font-weight:600");
-    else console.log(`%c[PT ${short}] ${tag}`, "color:#d4a24e;font-weight:600", data);
-  } catch (_) {}
+  globalThis.PT_AGENT_LOGGER.write(entry);
+  // 仅在停留于第一页时实时刷新，避免用户翻阅历史页时被新日志打断跳页。
+  if (document.getElementById("logList") && logPage === 0) renderLogs();
+  return entry;
 };
 
 const loadDebugLog = async () => {
   try {
-    const stored = await chrome.storage.local.get("ptAgentDebugLog");
-    const history = Array.isArray(stored.ptAgentDebugLog) ? stored.ptAgentDebugLog : [];
-    // 合并本次启动已产生的条目（在前）与历史（在后），按容量截断。
-    debugBuffer = [...debugBuffer, ...history].slice(0, DEBUG_LOG_CAP);
+    const history = await globalThis.PT_AGENT_LOGGER.list();
+    const seen = new Set();
+    debugBuffer = [...debugBuffer, ...history]
+      .filter((entry) => entry?.id && !seen.has(entry.id) && seen.add(entry.id))
+      .slice(0, DEBUG_LOG_CAP);
   } catch (_) {}
 };
 
@@ -54,7 +54,18 @@ const LOG_LEVEL = (tag) => {
   const t = String(tag);
   if (/error|failed|suspect|enqueue-error/.test(t)) return "error";
   if (/verify|refresh-failed|warn/.test(t)) return "warn";
+  if (/add-result|res\b|refreshed|success/.test(t)) return "ok";
   return "info";
+};
+
+const LOG_PAGE_SIZE = 25;
+let logPage = 0;
+
+const formatLogTime = (iso) => {
+  const date = new Date(iso);
+  if (!Number.isFinite(date.getTime())) return String(iso);
+  const pad = (n, w = 2) => String(n).padStart(w, "0");
+  return `${pad(date.getMonth() + 1)}-${pad(date.getDate())} ${pad(date.getHours())}:${pad(date.getMinutes())}:${pad(date.getSeconds())}.${pad(date.getMilliseconds(), 3)}`;
 };
 
 const renderLogs = () => {
@@ -62,36 +73,82 @@ const renderLogs = () => {
   if (!list) return;
   const countBadge = document.getElementById("logCount");
   if (countBadge) countBadge.textContent = `${debugBuffer.length} 条`;
+
   if (!debugBuffer.length) {
     list.innerHTML = `<div class="empty compact-empty">暂无日志。发送种子、扫描等动作会在此记录。</div>`;
+    const pager = document.getElementById("logPager");
+    if (pager) pager.innerHTML = "";
     return;
   }
-  list.innerHTML = debugBuffer.map((entry) => {
-    const time = String(entry.ts).replace("T", " ").slice(0, 23);
-    const level = LOG_LEVEL(entry.tag);
-    const dataText = entry.data === null || entry.data === undefined
+
+  const pageCount = Math.max(1, Math.ceil(debugBuffer.length / LOG_PAGE_SIZE));
+  logPage = Math.min(Math.max(0, logPage), pageCount - 1);
+  const start = logPage * LOG_PAGE_SIZE;
+  const pageItems = debugBuffer.slice(start, start + LOG_PAGE_SIZE);
+
+  list.innerHTML = pageItems.map((entry) => {
+    const level = entry.level === "error"
+      ? "error"
+      : entry.level === "warn"
+        ? "warn"
+        : LOG_LEVEL(entry.tag);
+    const hasData = entry.data !== null && entry.data !== undefined;
+    const fullText = !hasData
       ? ""
       : typeof entry.data === "string"
         ? entry.data
         : JSON.stringify(entry.data, null, 2);
+    const summary = !hasData
+      ? ""
+      : typeof entry.data === "string"
+        ? entry.data
+        : JSON.stringify(entry.data);
+    const operationLabel = entry.operation_id
+      ? `[op:${String(entry.operation_id).slice(-8)}] `
+      : "";
     return `
-      <div class="log-row ${level}">
-        <span class="log-time">${escapeHtml(time)}</span>
-        <span class="log-tag">${escapeHtml(entry.tag)}</span>
-        ${dataText ? `<pre class="log-data">${escapeHtml(dataText)}</pre>` : ""}
+      <div class="log-row ${level}${hasData ? " expandable" : ""}">
+        <div class="log-main">
+          <span class="log-time">${escapeHtml(formatLogTime(entry.ts))}</span>
+          <span class="log-tag">${escapeHtml(entry.tag)}</span>
+          <span class="log-summary" title="${escapeHtml(entry.operation_id || "")}">${escapeHtml(operationLabel + summary)}</span>
+          <span class="log-caret">${hasData ? "▸" : ""}</span>
+        </div>
+        ${fullText ? `<pre class="log-data">${escapeHtml(fullText)}</pre>` : ""}
       </div>
     `;
   }).join("");
+
+  list.querySelectorAll(".log-row.expandable .log-main").forEach((main) => {
+    main.addEventListener("click", () => main.parentElement.classList.toggle("open"));
+  });
+
+  const pager = document.getElementById("logPager");
+  if (pager) {
+    pager.innerHTML = `
+      <button class="btn btn-quiet log-page-btn" data-log-nav="prev" ${logPage <= 0 ? "disabled" : ""}>← 上一页</button>
+      <span class="log-page-info">第 ${logPage + 1} / ${pageCount} 页 · 每页 ${LOG_PAGE_SIZE} 条 · 共 ${debugBuffer.length} 条</span>
+      <button class="btn btn-quiet log-page-btn" data-log-nav="next" ${logPage >= pageCount - 1 ? "disabled" : ""}>下一页 →</button>
+    `;
+    pager.querySelectorAll("[data-log-nav]").forEach((button) => {
+      button.addEventListener("click", () => {
+        logPage += button.dataset.logNav === "next" ? 1 : -1;
+        renderLogs();
+      });
+    });
+  }
 };
 
 const clearLogs = async () => {
   debugBuffer = [];
-  try { await chrome.storage.local.set({ ptAgentDebugLog: [] }); } catch (_) {}
+  logPage = 0;
+  await globalThis.PT_AGENT_LOGGER.clear();
   renderLogs();
 };
 
 const exportLogs = () => {
-  const blob = new Blob([JSON.stringify(debugBuffer, null, 2)], { type: "application/json" });
+  const safe = globalThis.PT_AGENT_LOGGER.redact(debugBuffer);
+  const blob = new Blob([JSON.stringify(safe, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -247,21 +304,18 @@ const saveGuardSettings = async () => {
 };
 
 const loadAuditEvents = async () => {
-  const stored = await chrome.storage.local.get("ptAgentAuditLog");
-  state.auditEvents = Array.isArray(stored.ptAgentAuditLog) ? stored.ptAgentAuditLog : [];
+  state.auditEvents = await globalThis.PT_AGENT_LOGGER.listAudit();
   renderAuditEvents();
 };
 
-const appendAuditEvent = async (event) => {
-  const stored = await chrome.storage.local.get("ptAgentAuditLog");
-  const events = Array.isArray(stored.ptAgentAuditLog) ? stored.ptAgentAuditLog : [];
-  events.unshift({
-    id: `${Date.now()}-${Math.random().toString(16).slice(2)}`,
-    timestamp: new Date().toISOString(),
+const appendAuditEvent = async (event, operationId = state.operationId) => {
+  const next = await globalThis.PT_AGENT_LOGGER.appendAudit({
+    operation_id: operationId,
     ...event
   });
-  state.auditEvents = events.slice(0, 500);
-  await chrome.storage.local.set({ ptAgentAuditLog: state.auditEvents });
+  state.auditEvents = Array.isArray(next) && next.length
+    ? next
+    : await globalThis.PT_AGENT_LOGGER.listAudit();
   renderAuditEvents();
 };
 
@@ -315,13 +369,25 @@ const setQbStatus = (text, type) => {
   $("qbStatus").className = `site-status ${type}`;
 };
 
-const createQbClient = () => {
+const createQbClient = (
+  operationId = state.operationId || globalThis.PT_AGENT_LOGGER.newOperationId()
+) => {
   if (!state.qbSettings) throw new Error("请先保存下载器设置");
   if (!state.qbSettings.password) throw new Error("请先填写 qBittorrent 密码");
-  return globalThis.PT_AGENT_QB.createClient(state.qbSettings);
+  return globalThis.PT_AGENT_QB.createClient(
+    state.qbSettings,
+    undefined,
+    (event, data) => debug(event, data, operationId)
+  );
 };
 
-const mteamRequest = async (path, { json, form } = {}) => {
+const mteamRequest = async (
+  path,
+  { json, form, operationId: suppliedOperationId } = {}
+) => {
+  const operationId = suppliedOperationId
+    || state.operationId
+    || globalThis.PT_AGENT_LOGGER.newOperationId();
   if (!state.qbSettings?.mteamApiKey) throw new Error("缺少 M-Team API Key");
   const headers = { "x-api-key": state.qbSettings.mteamApiKey };
   let body;
@@ -331,12 +397,27 @@ const mteamRequest = async (path, { json, form } = {}) => {
   } else if (form !== undefined) {
     body = form;
   }
-  const response = await fetch(
-    new URL(String(path).replace(/^\/+/, ""), globalThis.PT_AGENT_PRIVATE_CONFIG.mteamApiUrl),
-    { method: "POST", headers, body }
-  );
+  const params = json !== undefined
+    ? json
+    : form !== undefined
+      ? Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v).slice(0, 60)]))
+      : null;
+  const url = new URL(String(path).replace(/^\/+/, ""), globalThis.PT_AGENT_PRIVATE_CONFIG.mteamApiUrl).toString();
+  debug("mteam:req", { path, params }, operationId);
+  let response;
+  try {
+    response = await fetch(url, { method: "POST", headers, body });
+  } catch (error) {
+    debug("mteam:req-error", { path, error: String(error?.message || error) }, operationId);
+    throw new Error(`M-Team 无法连接（${String(error?.message || error)}）`);
+  }
   const payload = await response.json().catch(() => ({}));
+  const dataShape = payload?.data && typeof payload.data === "object"
+    ? Object.keys(payload.data)
+    : typeof payload?.data;
+  debug("mteam:res", { path, status: response.status, message: payload?.message, dataShape }, operationId);
   if (!response.ok || payload?.message !== "SUCCESS") {
+    debug("mteam:res-error", { path, status: response.status, message: payload?.message }, operationId);
     throw new Error(payload?.message || `M-Team 请求失败（HTTP ${response.status}）`);
   }
   return payload.data;
@@ -363,11 +444,11 @@ const scanSourceTab = async () => {
   return results?.[0]?.result || null;
 };
 
-const fetchMteamAccount = async () => {
+const fetchMteamAccount = async (operationId) => {
   const [profile, statistics, bonusData] = await Promise.all([
-    mteamRequest("/api/member/profile"),
-    mteamRequest("/api/tracker/myPeerStatistics"),
-    mteamRequest("/api/tracker/mybonus")
+    mteamRequest("/api/member/profile", { operationId }),
+    mteamRequest("/api/tracker/myPeerStatistics", { operationId }),
+    mteamRequest("/api/tracker/mybonus", { operationId })
   ]);
   const uploadedBytes = Number(profile?.memberCount?.uploaded || 0);
   const downloadedBytes = Number(profile?.memberCount?.downloaded || 0);
@@ -388,7 +469,7 @@ const fetchMteamAccount = async () => {
   };
 };
 
-const fetchMteamFreeCatalog = async () => {
+const fetchMteamFreeCatalog = async (operationId) => {
   const core = globalThis.PT_AGENT_MTEAM_BACKFILL;
   const pageSize = 100;
   const maxPages = 10;
@@ -398,7 +479,8 @@ const fetchMteamFreeCatalog = async () => {
     let emptyFreePages = 0;
     for (let pageNumber = 1; pageNumber <= maxPages; pageNumber += 1) {
       const data = await mteamRequest("/api/torrent/search", {
-        json: { mode, pageNumber, pageSize, discount: "FREE" }
+        json: { mode, pageNumber, pageSize, discount: "FREE" },
+        operationId
       });
       const rows = data?.data || [];
       const freeRows = rows.filter((row) => {
@@ -458,11 +540,12 @@ const fetchMteamFreeCatalog = async () => {
   };
 };
 
-const findMteamFreeDeadlines = async (tasks) => {
+const findMteamFreeDeadlines = async (tasks, operationId) => {
   const core = globalThis.PT_AGENT_MTEAM_BACKFILL;
   const search = async (keyword, mode) => {
     const data = await mteamRequest("/api/torrent/search", {
-      json: { mode, pageNumber: 1, pageSize: 100, keyword }
+      json: { mode, pageNumber: 1, pageSize: 100, keyword },
+      operationId
     });
     return data?.data || [];
   };
@@ -496,6 +579,7 @@ const findMteamFreeDeadlines = async (tasks) => {
 };
 
 const backfillMteamDeadlines = async () => {
+  const operationId = globalThis.PT_AGENT_LOGGER.newOperationId();
   const button = $("backfillDeadlineBtn");
   const originalText = button.textContent;
   button.disabled = true;
@@ -503,7 +587,7 @@ const backfillMteamDeadlines = async () => {
   try {
     state.qbSettings = await saveQbSettings({ announce: false });
     if (!state.qbSettings.mteamApiKey) throw new Error("缺少 M-Team API Key");
-    const client = createQbClient();
+    const client = createQbClient(operationId);
     await client.login();
     const allTorrents = await client.listTorrents("all");
     const candidates = allTorrents.filter((torrent) => {
@@ -524,11 +608,11 @@ const backfillMteamDeadlines = async () => {
       return;
     }
     setQbMessage(`正在回查 ${candidates.length} 个下载中的 M-Team 任务，仅精确匹配名称和体积后才写入标签。`);
-    const updates = await findMteamFreeDeadlines(candidates);
+    const updates = await findMteamFreeDeadlines(candidates, operationId);
     for (const update of updates) {
       await client.addTags(update.hash, globalThis.PT_AGENT_QB.torrentTags(update.deadline));
     }
-    await refreshQbTorrents({ silent: true });
+    await refreshQbTorrents({ silent: true, operationId });
     setQbMessage(
       `回填完成：检查 ${candidates.length} 个下载中任务，找到并更新 ${updates.length} 个当前 Free 截止时间。`,
       "success"
@@ -541,7 +625,7 @@ const backfillMteamDeadlines = async () => {
   }
 };
 
-const resolveTorrentDownloadUrl = async (torrent) => {
+const resolveTorrentDownloadUrl = async (torrent, operationId) => {
   if (torrent.downloadUrl) return torrent.downloadUrl;
   if (torrent.site !== "mteam") {
     throw new Error("当前资源没有可用的种子下载链接");
@@ -554,7 +638,15 @@ const resolveTorrentDownloadUrl = async (torrent) => {
   }
   const body = new FormData();
   body.set("id", String(torrent.torrentId));
-  const downloadUrl = await mteamRequest("/api/torrent/genDlToken", { form: body });
+  const downloadUrl = await mteamRequest(
+    "/api/torrent/genDlToken",
+    { form: body, operationId }
+  );
+  debug(
+    "mteam:gen-dl-token",
+    { torrentId: torrent.torrentId, generated: Boolean(downloadUrl) },
+    operationId
+  );
   if (!downloadUrl) throw new Error("未能生成 M-Team 种子下载地址");
   return downloadUrl;
 };
@@ -617,9 +709,12 @@ const renderAuditEvents = () => {
     enqueue_error: "提交失败",
     guard_warning: "保护预警",
     guard_delete: "保护删除",
-    guard_error: "保护异常"
+    guard_error: "保护异常",
+    torrent_excluded: "手动排除",
+    torrent_restored: "恢复决策"
   };
-  list.innerHTML = state.auditEvents.slice(0, 30).map((event) => `
+  const newestEvents = globalThis.PT_AGENT_AUDIT.newestFirst(state.auditEvents);
+  list.innerHTML = newestEvents.slice(0, 30).map((event) => `
     <div class="audit-row">
       <span>${escapeHtml(formatPublishedAt(event.timestamp))}</span>
       <span class="audit-action">${escapeHtml(actionLabels[event.action] || event.action || "未知动作")}</span>
@@ -644,6 +739,12 @@ const renderQbTorrents = () => {
       guardMinutes: state.policySettings?.guardMinutes || 10
     });
     const guard = guardPresentation(guardResult);
+    const excluded = isTorrentExcluded({
+      ...torrent,
+      infoHash: torrent.hash,
+      title: torrent.name,
+      sizeBytes: torrent.total_size || torrent.size
+    });
     return `
       <div class="qb-row">
         <div>
@@ -661,20 +762,120 @@ const renderQbTorrents = () => {
           <div class="deadline ${deadline ? "" : "missing"}">${escapeHtml(deadline || "未设置截止标签")}</div>
           <div class="qb-subtext">${escapeHtml(guard.detail || torrent.tags || "无标签")}</div>
         </div>
+        <div class="qb-actions">
+          <button class="btn btn-danger qb-exclude-button" type="button" data-hash="${escapeHtml(torrent.hash || "")}">${excluded ? "重试删除" : "排除并删除"}</button>
+        </div>
       </div>
     `;
   }).join("");
+
+  list.querySelectorAll(".qb-exclude-button").forEach((button) => {
+    button.addEventListener("click", () => {
+      const torrent = state.qbTorrents.find((item) => item.hash === button.dataset.hash);
+      if (torrent) excludeAndDeleteTorrent(torrent);
+    });
+  });
 };
 
-const refreshQbTorrents = async ({ silent = false } = {}) => {
+const renderExcludedTorrents = () => {
+  const list = $("excludedList");
+  if (!list) return;
+  $("excludedCount").textContent = `${state.excludedTorrents.length} 个`;
+  if (!state.excludedTorrents.length) {
+    list.innerHTML = `<div class="empty compact-empty">暂无已排除种子。</div>`;
+    return;
+  }
+  list.innerHTML = state.excludedTorrents.map((record) => `
+    <div class="excluded-row">
+      <div>
+        <div class="qb-name">${escapeHtml(record.title || record.torrentId || record.infoHash || "未命名种子")}</div>
+        <div class="qb-subtext">${escapeHtml(record.site && record.torrentId ? `${record.site}:${record.torrentId}` : record.infoHash || "名称和体积匹配")}</div>
+      </div>
+      <div class="cell">${escapeHtml(formatPublishedAt(record.excludedAt))}</div>
+      <button class="btn btn-quiet excluded-restore-button" type="button" data-exclusion-id="${escapeHtml(record.id)}">恢复参与决策</button>
+    </div>
+  `).join("");
+  list.querySelectorAll(".excluded-restore-button").forEach((button) => {
+    button.addEventListener("click", () => restoreExcludedTorrent(button.dataset.exclusionId));
+  });
+};
+
+const excludeAndDeleteTorrent = async (torrent) => {
+  const confirmed = confirm(`确定排除并删除「${torrent.name || "未命名任务"}」吗？\n\nqBittorrent 任务和已下载文件都会删除；排除记录会保留，之后的种子决策不会再推荐它。`);
+  if (!confirmed) return;
+  const operationId = globalThis.PT_AGENT_LOGGER.newOperationId();
+  const source = globalThis.PT_AGENT_QB.sourceFromTags(torrent.tags) || {};
+  const record = await exclusionStore.exclude({
+    ...source,
+    infoHash: torrent.hash,
+    title: torrent.name,
+    sizeBytes: torrent.total_size || torrent.size,
+    reason: "user_manual",
+    deleteFiles: true
+  });
+  state.excludedTorrents = await exclusionStore.list();
+  state.evaluated = state.evaluated.filter((item) => !isTorrentExcluded(item));
+  renderExcludedTorrents();
+  renderList();
+  await appendAuditEvent({
+    action: "torrent_excluded",
+    status: "excluded",
+    title: record.title,
+    site: record.site,
+    torrentId: record.torrentId,
+    reason: "用户手动加入排除列表，并请求删除 qB 任务和文件",
+    deleteFiles: true
+  }, operationId).catch(() => {});
   try {
     state.qbSettings = await saveQbSettings({ announce: false });
-    const client = createQbClient();
+    const client = createQbClient(operationId);
+    await client.login();
+    await client.deleteTorrents(torrent.hash, true);
+    state.qbTorrents = state.qbTorrents.filter((item) => item.hash !== torrent.hash);
+    renderQbTorrents();
+    setQbMessage(`已删除并排除：${torrent.name}`, "success");
+    showToast(`🗑️ 已删除并排除：${torrent.name}`, "success");
+  } catch (error) {
+    renderQbTorrents();
+    const reason = error.message || String(error);
+    setQbMessage(`已加入排除列表，但 qB 删除失败：${reason}`, "error");
+    showToast(`⚠️ 已排除，但 qB 删除失败：${reason}`, "error");
+  }
+};
+
+const restoreExcludedTorrent = async (id) => {
+  const record = state.excludedTorrents.find((item) => item.id === id);
+  state.excludedTorrents = await exclusionStore.restore(id);
+  renderExcludedTorrents();
+  renderQbTorrents();
+  await appendAuditEvent({
+    action: "torrent_restored",
+    status: "restored",
+    title: record?.title || "",
+    site: record?.site || "",
+    torrentId: record?.torrentId || "",
+    reason: "用户恢复参与后续种子决策",
+    deleteFiles: false
+  }).catch(() => {});
+  setQbMessage("已恢复参与决策；重新扫描后会再次显示符合条件的资源。", "success");
+};
+
+const refreshQbTorrents = async ({
+  silent = false,
+  operationId = globalThis.PT_AGENT_LOGGER.newOperationId()
+} = {}) => {
+  try {
+    state.qbSettings = await saveQbSettings({ announce: false });
+    const client = createQbClient(operationId);
     await client.login();
     state.qbTorrents = await client.listTorrents("all");
     state.qbSeedingSummary = globalThis.PT_AGENT_QB.summarizeMteamSeeding(state.qbTorrents);
     const downloadingCount = state.qbTorrents.filter(isActiveDownload).length;
-    debug("qb:refreshed", { tasks: state.qbTorrents.length, downloading: downloadingCount, evaluated: state.evaluated.length });
+    debug(
+      "qb:refreshed",
+      { tasks: state.qbTorrents.length, downloading: downloadingCount, evaluated: state.evaluated.length },
+      operationId
+    );
     renderQbTorrents();
     await loadAuditEvents();
     // qB 数据到位后必定重渲染资源列表，让「下载中/已下载」状态即时生效（修复重开插件后状态丢失）。
@@ -683,7 +884,7 @@ const refreshQbTorrents = async ({ silent = false } = {}) => {
     if (!silent) setQbMessage(`qBittorrent 当前有 ${downloadingCount} 个下载中任务。`, "success");
     return true;
   } catch (error) {
-    debug("qb:refresh-failed", String(error?.message || error));
+    debug("qb:refresh-failed", String(error?.message || error), operationId);
     setQbStatus("连接失败", "bad");
     setQbMessage(error.message || String(error), "error");
     return false;
@@ -691,14 +892,14 @@ const refreshQbTorrents = async ({ silent = false } = {}) => {
 };
 
 const testQbConnection = async () => {
+  const operationId = globalThis.PT_AGENT_LOGGER.newOperationId();
   try {
     state.qbSettings = await saveQbSettings({ announce: false });
-    const client = createQbClient();
+    const client = createQbClient(operationId);
     await client.login();
     const version = await client.getVersion();
     setQbStatus("已连接", "ok");
     setQbMessage(`qBittorrent ${version || "未知版本"} 连接成功。`, "success");
-    await refreshQbTorrents({ silent: true });
   } catch (error) {
     setQbStatus("连接失败", "bad");
     setQbMessage(
@@ -708,58 +909,95 @@ const testQbConnection = async () => {
   }
 };
 
-// 在浏览器侧抓取 .torrent 文件字节（插件有 M-Team 权限与用户会话）。抓取失败/内容不是种子时直接抛错，
-// 避免静默回退到「让 qB 服务器端去抓链接」这条已知会失败的路径而造成假成功。
-const fetchTorrentFile = async (downloadUrl) => {
-  const headers = {};
-  try {
-    const host = new URL(downloadUrl).hostname;
-    if (host.endsWith("m-team.cc") && state.qbSettings?.mteamApiKey) {
-      headers["x-api-key"] = state.qbSettings.mteamApiKey;
-    }
-  } catch (_) {}
-  const response = await fetch(downloadUrl, { credentials: "omit", headers });
-  const contentType = (response.headers.get("content-type") || "").toLowerCase();
-  const blob = await response.blob();
-  debug("qb:torrent-fetch", {
-    url: String(downloadUrl).slice(0, 140),
-    ok: response.ok,
-    status: response.status,
-    contentType,
-    size: blob.size
-  });
-  if (!response.ok) {
-    throw new Error(`浏览器下载 .torrent 失败（HTTP ${response.status}）`);
-  }
-  // 种子文件是 bencode（以 "d" 开头），几十 KB 起；返回 HTML/JSON 或过小说明拿到的是错误页而非种子。
-  if (contentType.includes("html") || contentType.includes("json") || blob.size < 50) {
-    const preview = (await blob.slice(0, 200).text()).replace(/\s+/g, " ").slice(0, 160);
-    debug("qb:torrent-fetch-suspect", { size: blob.size, contentType, preview });
-    throw new Error(`拿到的不是种子文件（${contentType || "unknown"}, ${blob.size}B）：${preview}`);
-  }
-  return blob;
+const renderQbDiagnostic = (result, address) => {
+  const panel = $("qbDiagnostic");
+  panel.hidden = false;
+  const stageRows = (result?.stages || []).map((stage) => `
+    <div class="qb-diagnostic-stage ${escapeHtml(stage.status)}">
+      <span class="diagnostic-dot"></span>
+      <strong>${escapeHtml(stage.label)}</strong>
+      <span>${escapeHtml(stage.detail)}</span>
+    </div>
+  `).join("");
+  const hint = result?.failedStage === "reachability"
+    ? "浏览器没有收到 qB 的 HTTP 响应。请确认 WebUI 已启动、地址和端口正确；如果地址改过，还要确认扩展拥有该地址的访问权限，并检查 HTTP/HTTPS 是否一致。"
+    : result?.failedStage === "login"
+      ? "qB 服务可以访问，但登录未通过。请检查账号密码，以及 WebUI 的 Host Header、CSRF 和认证设置。"
+      : result?.failedStage === "api"
+        ? "登录成功，但 Web API 版本接口异常。请检查 qB WebUI/API 设置。"
+        : "网络、登录和 Web API 均正常。";
+  panel.innerHTML = `
+    <div class="qb-diagnostic-title">
+      <strong>qB 独立诊断</strong>
+      <span>${escapeHtml(address || "")}</span>
+    </div>
+    ${stageRows}
+    <div class="qb-diagnostic-hint">${escapeHtml(hint)}</div>
+  `;
 };
 
-const enqueueTorrentDirectToQb = async (torrent, downloadUrl) => {
+const diagnoseQbConnection = async () => {
+  const button = $("diagnoseQbBtn");
+  const originalText = button.textContent;
+  button.disabled = true;
+  button.textContent = "检测中…";
+  try {
+    state.qbSettings = await saveQbSettings({ announce: false });
+    const client = createQbClient(globalThis.PT_AGENT_LOGGER.newOperationId());
+    const result = await client.diagnose();
+    renderQbDiagnostic(result, state.qbSettings.address);
+    setQbStatus(result.ok ? "诊断通过" : "诊断失败", result.ok ? "ok" : "bad");
+    setQbMessage(
+      result.ok
+        ? `qBittorrent ${result.version} 独立诊断通过。`
+        : `qB 独立诊断停在「${result.stages.at(-1)?.label || "未知阶段"}」。`,
+      result.ok ? "success" : "error"
+    );
+  } catch (error) {
+    const result = {
+      ok: false,
+      failedStage: "settings",
+      stages: [{
+        key: "settings",
+        label: "设置校验",
+        status: "error",
+        detail: error.message || String(error)
+      }]
+    };
+    renderQbDiagnostic(result, $("qbAddress").value.trim());
+    setQbStatus("诊断失败", "bad");
+    setQbMessage(error.message || String(error), "error");
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+};
+
+const enqueueTorrentDirectToQb = async (torrent, downloadUrl, operationId) => {
   state.qbSettings = await saveQbSettings({ announce: false });
-  const client = createQbClient();
+  const client = createQbClient(operationId);
   const savePath = state.qbSettings?.savePath || "";
   await client.login();
   await client.ensureCategory("PT_AGENT", savePath);
-  const tag = globalThis.PT_AGENT_QB.torrentTags(torrent.freeEndAt || "");
-  const file = await fetchTorrentFile(downloadUrl);
-  const safeName = String(torrent.title || torrent.torrentId || "download").replace(/[^\w.-]+/g, "_").slice(0, 80);
-  debug("qb:add", { route: "file-upload", size: file.size, filename: `${safeName}.torrent`, savePath });
+  const tag = [
+    globalThis.PT_AGENT_QB.torrentTags(torrent.freeEndAt || ""),
+    globalThis.PT_AGENT_QB.sourceTag(torrent.site, torrent.torrentId)
+  ].filter(Boolean).join(", ");
+  // 交给 qB 直接抓取下载链接（旧版本可用的方式）：qB 与浏览器可能出口 IP 一致，服务端抓取更稳。
+  debug(
+    "qb:add",
+    { route: "url", hasDownloadUrl: Boolean(downloadUrl), tag, savePath },
+    operationId
+  );
   const addResult = await client.addTorrent({
-    file,
-    filename: `${safeName}.torrent`,
+    url: downloadUrl,
     tag,
     savePath,
     category: "PT_AGENT"
   });
-  debug("qb:add-result", addResult);
+  debug("qb:add-result", addResult, operationId);
   return {
-    route: "file",
+    route: "url",
     evaluation: {
       decision: torrent.decision,
       score: Number(torrent.score || 0)
@@ -768,15 +1006,29 @@ const enqueueTorrentDirectToQb = async (torrent, downloadUrl) => {
 };
 
 const enqueueTorrent = async (torrent, { manualOverride = false } = {}) => {
+  const operationId = globalThis.PT_AGENT_LOGGER.newOperationId();
   const key = `${torrent.site}:${torrent.torrentId || torrent.rowIndex}`;
   state.qbPushStatus.set(key, "loading");
   renderList();
+  debug(
+    "qb:enqueue-start",
+    {
+      title: torrent.title,
+      site: torrent.site,
+      torrentId: torrent.torrentId,
+      hasDownloadUrl: Boolean(torrent.downloadUrl),
+      freeEndAt: torrent.freeEndAt || null,
+      decision: torrent.decision,
+      manualOverride
+    },
+    operationId
+  );
   try {
     if (!torrent.freeEndAt && !manualOverride) {
       throw new Error("缺少 Free 截止时间，未发送到 qBittorrent");
     }
-    const downloadUrl = await resolveTorrentDownloadUrl(torrent);
-    const result = await enqueueTorrentDirectToQb(torrent, downloadUrl);
+    const downloadUrl = await resolveTorrentDownloadUrl(torrent, operationId);
+    const result = await enqueueTorrentDirectToQb(torrent, downloadUrl, operationId);
     await appendAuditEvent({
       action: manualOverride ? "enqueue_manual_override" : "enqueue",
       status: "queued",
@@ -789,7 +1041,7 @@ const enqueueTorrent = async (torrent, { manualOverride = false } = {}) => {
         ? `用户手动覆盖 risk 准入，分类 PT_AGENT，评分 ${result.evaluation.score}`
         : `本地安全准入通过，分类 PT_AGENT，评分 ${result.evaluation.score}`,
       deleteFiles: false
-    }).catch(() => {});
+    }, operationId).catch(() => {});
     state.qbPushStatus.set(key, "success");
     const okMessage = manualOverride
       ? `已按你的判断手动发送：${torrent.title}`
@@ -798,9 +1050,13 @@ const enqueueTorrent = async (torrent, { manualOverride = false } = {}) => {
     showToast(`✅ ${okMessage}`, "success");
     // 发送后验证：qB 可能回「Ok」却因保存目录无效/重复/被拒而不真正添加，此处兜底提示，避免假成功。
     setTimeout(async () => {
-      await refreshQbTorrents({ silent: true });
+      await refreshQbTorrents({ silent: true, operationId });
       const landed = findQbTorrent(torrent);
-      debug("qb:verify", { title: torrent.title, landedInQb: Boolean(landed), qbTorrents: state.qbTorrents.length });
+      debug(
+        "qb:verify",
+        { title: torrent.title, landedInQb: Boolean(landed), qbTorrents: state.qbTorrents.length },
+        operationId
+      );
       if (!landed) {
         showToast(
           `⚠️ qB 接受了请求，但未出现任务「${torrent.title}」。可能是：保存目录无效、重复任务、或种子被 qB 拒绝。控制台看 [PT] qb:add-result。`,
@@ -822,10 +1078,10 @@ const enqueueTorrent = async (torrent, { manualOverride = false } = {}) => {
       progress: 0,
       reason,
       deleteFiles: false
-    }).catch(() => {});
+    }, operationId).catch(() => {});
     setQbMessage(`${torrent.title}：${reason}`, "error");
     showToast(`❌ 发送失败：${torrent.title}\n${reason}`, "error");
-    debug("qb:enqueue-error", reason);
+    debug("qb:enqueue-error", reason, operationId);
     return false;
   } finally {
     renderList();
@@ -833,7 +1089,7 @@ const enqueueTorrent = async (torrent, { manualOverride = false } = {}) => {
 };
 
 const pushRecommended = async () => {
-  const torrents = state.evaluated.filter((torrent) => torrent.decision === "recommend");
+  const torrents = state.evaluated.filter((torrent) => torrent.decision === "recommend" && !isTorrentExcluded(torrent));
   if (!torrents.length) {
     setQbMessage("当前没有可一键下载的推荐资源。", "error");
     return;
@@ -1012,6 +1268,7 @@ const renderList = () => {
     return Number.isFinite(value) ? value : -Infinity;
   };
   const rows = state.evaluated
+    .filter((item) => !isTorrentExcluded(item))
     .filter((item) => state.filter === "all" || item.decision === state.filter)
     .sort((a, b) => freeRemainingSortValue(b) - freeRemainingSortValue(a));
 
@@ -1123,21 +1380,26 @@ const escapeHtml = (value) => {
 };
 
 const runScan = async () => {
-  debug("scan:start");
+  const operationId = globalThis.PT_AGENT_LOGGER.newOperationId();
+  debug("scan:start", null, operationId);
   $("list").innerHTML = `<div class="empty">正在从 M-Team API 加载当前 Free…</div>`;
   try {
     const settings = state.policySettings || await getSettings();
     state.policySettings = settings;
     const [accountResult, catalogResult] = await Promise.allSettled([
-      fetchMteamAccount(),
-      fetchMteamFreeCatalog()
+      fetchMteamAccount(operationId),
+      fetchMteamFreeCatalog(operationId)
     ]);
-    debug("scan:fetched", {
-      account: accountResult.status,
-      catalog: catalogResult.status,
-      catalogCount: catalogResult.status === "fulfilled" ? catalogResult.value?.torrents?.length : null,
-      catalogError: catalogResult.status === "rejected" ? String(catalogResult.reason?.message || catalogResult.reason) : null
-    });
+    debug(
+      "scan:fetched",
+      {
+        account: accountResult.status,
+        catalog: catalogResult.status,
+        catalogCount: catalogResult.status === "fulfilled" ? catalogResult.value?.torrents?.length : null,
+        catalogError: catalogResult.status === "rejected" ? String(catalogResult.reason?.message || catalogResult.reason) : null
+      },
+      operationId
+    );
     if (catalogResult.status === "fulfilled") {
       const catalog = catalogResult.value;
       state.scan = {
@@ -1188,16 +1450,21 @@ const runScan = async () => {
       }
     }
     state.evaluated = (state.scan?.torrents || [])
+      .filter((torrent) => !isTorrentExcluded(torrent))
       .map((torrent) => evaluateTorrent(torrent, settings))
       .sort((a, b) => publishedTimestamp(b.publishedAt) - publishedTimestamp(a.publishedAt));
     const catalogStats = state.scan?.catalogStats;
     $("pageInfo").textContent = catalogStats
       ? `M-Team 当前 Free · ${catalogStats.total} 个资源 · 普通区 ${catalogStats.normalPages} 页 / 成人区 ${catalogStats.adultPages} 页`
       : `${state.scan?.page?.title || "当前页面"} · ${state.evaluated.length} 个资源`;
-    debug("scan:evaluated", { evaluated: state.evaluated.length, filter: state.filter, qbTorrents: state.qbTorrents.length });
+    debug(
+      "scan:evaluated",
+      { evaluated: state.evaluated.length, filter: state.filter, qbTorrents: state.qbTorrents.length },
+      operationId
+    );
     renderList();
   } catch (error) {
-    debug("scan:error", String(error?.message || error));
+    debug("scan:error", String(error?.message || error), operationId);
     $("list").innerHTML = `<div class="empty">扫描失败：${escapeHtml(error.message || String(error))}</div>`;
   }
 };
@@ -1244,7 +1511,10 @@ const switchView = (view) => {
   if (state.activeView === "downloads" && state.qbSettings?.password) {
     refreshQbTorrents({ silent: true });
   }
-  if (state.activeView === "logs") renderLogs();
+  if (state.activeView === "logs") {
+    logPage = 0;
+    renderLogs();
+  }
 };
 
 const exportPayload = () => {
@@ -1275,7 +1545,8 @@ const downloadJson = () => {
 };
 
 const exportAuditJson = () => {
-  const blob = new Blob([JSON.stringify(state.auditEvents, null, 2)], { type: "application/json" });
+  const safe = globalThis.PT_AGENT_LOGGER.redact(state.auditEvents);
+  const blob = new Blob([JSON.stringify(safe, null, 2)], { type: "application/json" });
   const url = URL.createObjectURL(blob);
   const a = document.createElement("a");
   a.href = url;
@@ -1315,13 +1586,15 @@ document.addEventListener("DOMContentLoaded", async () => {
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
     state.sourceTabId = activeTab?.id || null;
   }
-  [state.policySettings, state.qbSettings] = await Promise.all([
+  [state.policySettings, state.qbSettings, state.excludedTorrents] = await Promise.all([
     getSettings(),
-    getQbSettings()
+    getQbSettings(),
+    exclusionStore.list()
   ]);
   fillGuardSettingsForm(state.policySettings);
   fillQbSettingsForm(state.qbSettings);
   await loadAuditEvents();
+  renderExcludedTorrents();
   $("scanBtn").addEventListener("click", runScan);
   $("sourceBtn").addEventListener("click", focusSourceTab);
   $("fullscreenBtn").addEventListener("click", openFullscreenDashboard);
@@ -1333,6 +1606,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     }
   });
   $("testQbBtn").addEventListener("click", testQbConnection);
+  $("diagnoseQbBtn").addEventListener("click", diagnoseQbConnection);
   $("backfillDeadlineBtn").addEventListener("click", backfillMteamDeadlines);
   $("refreshQbBtn").addEventListener("click", refreshQbTorrents);
   $("saveGuardBtn").addEventListener("click", saveGuardSettings);

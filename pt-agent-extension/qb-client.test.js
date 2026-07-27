@@ -100,6 +100,70 @@ test("adds the fixed ptagent tag before the Free deadline", () => {
   );
 });
 
+test("round-trips the source identity tag", () => {
+  const qb = loadClient();
+  assert.equal(qb.sourceTag("MTEAM", 123), "ptagent-source=mteam:123");
+  assert.deepEqual(
+    { ...qb.sourceFromTags("ptagent, ptagent-source=mteam:123") },
+    { site: "mteam", torrentId: "123" }
+  );
+});
+
+test("diagnoses a network-level qBittorrent reachability failure", async () => {
+  const qb = loadClient();
+  const client = qb.createClient({
+    address: "http://192.168.1.10:8080/",
+    username: "admin",
+    password: "secret"
+  }, async () => {
+    throw new TypeError("Failed to fetch");
+  });
+  const result = await client.diagnose();
+  assert.equal(result.ok, false);
+  assert.equal(result.failedStage, "reachability");
+  assert.deepEqual(Array.from(result.stages, (stage) => stage.status), ["error"]);
+});
+
+test("distinguishes reachable qBittorrent from a login failure", async () => {
+  const qb = loadClient();
+  const client = qb.createClient({
+    address: "http://192.168.1.10:8080/",
+    username: "admin",
+    password: "wrong"
+  }, async (url) => {
+    if (url.includes("/app/version")) return new Response("Forbidden", { status: 403 });
+    if (url.includes("/auth/login")) return new Response("Fails.");
+    throw new Error(`Unexpected URL: ${url}`);
+  });
+  const result = await client.diagnose();
+  assert.equal(result.ok, false);
+  assert.equal(result.failedStage, "login");
+  assert.deepEqual(Array.from(result.stages, (stage) => stage.status), ["ok", "error"]);
+});
+
+test("reports all qBittorrent diagnostic stages and the version on success", async () => {
+  let versionCalls = 0;
+  const qb = loadClient();
+  const client = qb.createClient({
+    address: "http://192.168.1.10:8080/",
+    username: "admin",
+    password: "secret"
+  }, async (url) => {
+    if (url.includes("/auth/login")) return new Response("Ok.");
+    if (url.includes("/app/version")) {
+      versionCalls += 1;
+      return new Response(versionCalls === 1 ? "Forbidden" : "v5.1.2", {
+        status: versionCalls === 1 ? 403 : 200
+      });
+    }
+    throw new Error(`Unexpected URL: ${url}`);
+  });
+  const result = await client.diagnose();
+  assert.equal(result.ok, true);
+  assert.equal(result.version, "v5.1.2");
+  assert.deepEqual(Array.from(result.stages, (stage) => stage.status), ["ok", "ok", "ok"]);
+});
+
 test("extracts an ISO 8601 deadline without dropping its offset", () => {
   const qb = loadClient();
   assert.equal(

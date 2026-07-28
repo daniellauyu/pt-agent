@@ -1103,6 +1103,18 @@ a.title:hover {
   box-shadow: none;
 }
 
+.policy-grid label small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.45;
+  opacity: 0.85;
+}
+
+.policy-grid label.settings-switch {
+  align-self: center;
+  padding-bottom: 0;
+}
+
 .settings-card-foot {
   display: flex;
   align-items: center;

@@ -258,15 +258,77 @@ const formatPublishedAt = (value) => {
 
 const evaluateTorrent = globalThis.PT_AGENT_DECISION.evaluateTorrent;
 
+// 准入阈值完全由「设置 → 下载策略」决定，这里不再二次收紧用户存下的值。
 const getSettings = async () => {
   const data = await chrome.storage.local.get("ptAgentSettings");
-  const merged = { ...defaultSettings, ...(data.ptAgentSettings || {}) };
-  return {
-    ...merged,
-    maxTorrentSizeGB: Math.min(50, Number(merged.maxTorrentSizeGB || 50)),
-    minimumScore: Math.max(80, Number(merged.minimumScore || 80)),
-    maxActiveDownloads: Math.min(3, Number(merged.maxActiveDownloads || 3))
+  return { ...defaultSettings, ...(data.ptAgentSettings || {}) };
+};
+
+const clampNumber = (value, { min, max, fallback }) => {
+  const parsed = Number(value);
+  if (!Number.isFinite(parsed)) return fallback;
+  return Math.min(max, Math.max(min, parsed));
+};
+
+const fillPolicySettingsForm = (settings) => {
+  $("policyMaxActiveDownloads").value = String(settings.maxActiveDownloads ?? 3);
+  $("policyMinimumScore").value = String(settings.minimumScore ?? 80);
+  $("policyMaxTorrentSizeGB").value = String(settings.maxTorrentSizeGB ?? 50);
+  $("policyMinFreeHours").value = String(settings.minFreeHoursForAutoDownload ?? 12);
+  $("policyMinimumRatio").value = String(settings.minimumRatio ?? 1);
+  $("policyRejectHr").checked = settings.rejectHr !== false;
+  $("policyRejectMissingFreeEnd").checked = settings.rejectMissingFreeEnd !== false;
+};
+
+const setPolicyMessage = (message, type = "") => {
+  const node = $("policyMessage");
+  if (!node) return;
+  node.textContent = message;
+  node.className = `downloader-message ${type}`.trim();
+};
+
+const readPolicySettingsForm = () => ({
+  // 这里只做输入合法性兜底（避免 0 并发、负体积），不是策略上限。
+  maxActiveDownloads: clampNumber($("policyMaxActiveDownloads").value, { min: 1, max: 50, fallback: 3 }),
+  minimumScore: clampNumber($("policyMinimumScore").value, { min: 0, max: 100, fallback: 80 }),
+  maxTorrentSizeGB: clampNumber($("policyMaxTorrentSizeGB").value, { min: 1, max: 4096, fallback: 50 }),
+  minFreeHoursForAutoDownload: clampNumber($("policyMinFreeHours").value, { min: 0, max: 720, fallback: 12 }),
+  minimumRatio: clampNumber($("policyMinimumRatio").value, { min: 0, max: 100, fallback: 1 }),
+  rejectHr: $("policyRejectHr").checked,
+  rejectMissingFreeEnd: $("policyRejectMissingFreeEnd").checked
+});
+
+const savePolicySettings = async () => {
+  const next = { ...(state.policySettings || defaultSettings), ...readPolicySettingsForm() };
+  state.policySettings = next;
+  await chrome.storage.local.set({ ptAgentSettings: next });
+  fillPolicySettingsForm(next);
+  // rejectHr / Free 剩余等条件属于决策引擎，改完要重新评估已扫描的资源才能生效。
+  reevaluateScannedTorrents();
+  setPolicyMessage(
+    `已保存：并发 ${next.maxActiveDownloads}、最低评分 ${next.minimumScore}、体积上限 ${next.maxTorrentSizeGB}GB、` +
+    `Free 最短剩余 ${next.minFreeHoursForAutoDownload} 小时、最低分享率 ${next.minimumRatio}。`,
+    "success"
+  );
+};
+
+const resetPolicySettings = async () => {
+  if (!confirm("确定把下载策略恢复成默认值吗？")) return;
+  const next = {
+    ...(state.policySettings || defaultSettings),
+    maxActiveDownloads: defaultSettings.maxActiveDownloads,
+    minimumScore: defaultSettings.minimumScore,
+    maxTorrentSizeGB: defaultSettings.maxTorrentSizeGB,
+    minFreeHoursForAutoDownload: defaultSettings.minFreeHoursForAutoDownload,
+    minimumRatio: defaultSettings.minimumRatio,
+    rejectHr: defaultSettings.rejectHr,
+    rejectMissingFreeEnd: defaultSettings.rejectMissingFreeEnd
   };
+  state.policySettings = next;
+  await chrome.storage.local.set({ ptAgentSettings: next });
+  fillPolicySettingsForm(next);
+  reevaluateScannedTorrents();
+  setPolicyMessage("已恢复默认下载策略。", "success");
 };
 
 const fillGuardSettingsForm = (settings) => {
@@ -1756,6 +1818,19 @@ const escapeHtml = (value) => {
     .replaceAll('"', "&quot;");
 };
 
+// 用当前策略重新评估已扫描到的资源。改了下载策略后不必重新拉一遍 M-Team。
+const reevaluateScannedTorrents = (
+  settings = state.policySettings || defaultSettings,
+  { render = true } = {}
+) => {
+  state.evaluated = (state.scan?.torrents || [])
+    .filter((torrent) => !isTorrentExcluded(torrent))
+    .map((torrent) => evaluateTorrent(torrent, settings))
+    .sort((a, b) => publishedTimestamp(b.publishedAt) - publishedTimestamp(a.publishedAt));
+  if (render) renderList();
+  return state.evaluated;
+};
+
 const runScan = async () => {
   const operationId = globalThis.PT_AGENT_LOGGER.newOperationId();
   debug("scan:start", null, operationId);
@@ -1826,10 +1901,7 @@ const runScan = async () => {
         state.scan.account = { ...(state.scan.account || {}), ...accountResult.value };
       }
     }
-    state.evaluated = (state.scan?.torrents || [])
-      .filter((torrent) => !isTorrentExcluded(torrent))
-      .map((torrent) => evaluateTorrent(torrent, settings))
-      .sort((a, b) => publishedTimestamp(b.publishedAt) - publishedTimestamp(a.publishedAt));
+    reevaluateScannedTorrents(settings, { render: false });
     const catalogStats = state.scan?.catalogStats;
     $("pageInfo").textContent = catalogStats
       ? `M-Team 当前 Free · ${catalogStats.total} 个资源 · 普通区 ${catalogStats.normalPages} 页 / 成人区 ${catalogStats.adultPages} 页`
@@ -1974,6 +2046,7 @@ document.addEventListener("DOMContentLoaded", async () => {
     exclusionStore.list()
   ]);
   fillGuardSettingsForm(state.policySettings);
+  fillPolicySettingsForm(state.policySettings);
   await renderDownloaderSettings();
   renderSiteSettings();
   await loadAuditEvents();
@@ -1989,6 +2062,8 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("backfillDeadlineBtn").addEventListener("click", backfillMteamDeadlines);
   $("refreshQbBtn").addEventListener("click", refreshQbTorrents);
   $("saveGuardBtn").addEventListener("click", saveGuardSettings);
+  $("savePolicyBtn").addEventListener("click", savePolicySettings);
+  $("resetPolicyBtn").addEventListener("click", resetPolicySettings);
   $("downloadRecommendedBtn").addEventListener("click", pushRecommended);
   $("copyBtn").addEventListener("click", copyJson);
   $("downloadBtn").addEventListener("click", downloadJson);

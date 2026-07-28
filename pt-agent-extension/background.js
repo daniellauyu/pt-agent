@@ -45,11 +45,9 @@ chrome.runtime.onInstalled.addListener(() => {
       guardExecutor: "extension",
       rejectHr: true,
       rejectMissingFreeEnd: true,
+      // 上面的字面量只在对应键缺失时兜底；准入阈值由「设置 → 下载策略」决定，这里不再收紧。
       ...(stored.ptAgentSettings || {}),
-      guardExecutor: "extension",
-      maxTorrentSizeGB: Math.min(50, Number(stored.ptAgentSettings?.maxTorrentSizeGB || 50)),
-      minimumScore: Math.max(80, Number(stored.ptAgentSettings?.minimumScore || 80)),
-      maxActiveDownloads: Math.min(3, Number(stored.ptAgentSettings?.maxActiveDownloads || 3))
+      guardExecutor: "extension"
     };
     // 稀缺资源机会模型统一沿用 maxTorrentSizeGB，这个从未生效的专用上限已废弃，顺带清掉历史残留。
     delete updates.ptAgentSettings.scarceOpportunityMaxSizeGB;

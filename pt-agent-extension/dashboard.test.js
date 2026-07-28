@@ -85,6 +85,47 @@ test("configures multiple downloaders and sites from a dedicated settings menu",
   });
 });
 
+test("exposes every local admission threshold in the download policy panel", () => {
+  const html = fs.readFileSync(path.join(extensionDir, "popup.html"), "utf8");
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  assert.match(html, /id="policySettingsPanel"/);
+  [
+    "policyMaxActiveDownloads",
+    "policyMinimumScore",
+    "policyMaxTorrentSizeGB",
+    "policyMinFreeHours",
+    "policyMinimumRatio",
+    "policyRejectHr",
+    "policyRejectMissingFreeEnd"
+  ].forEach((id) => {
+    assert.match(html, new RegExp(`id="${id}"`), `${id} must be editable in the UI`);
+    assert.match(script, new RegExp(`\\$\\("${id}"\\)`), `${id} must be read back by popup logic`);
+  });
+  assert.match(html, /id="savePolicyBtn"/);
+  assert.match(html, /id="resetPolicyBtn"/);
+  assert.match(script, /const savePolicySettings = async/);
+  assert.match(script, /const readPolicySettingsForm =/);
+});
+
+test("stops silently tightening the stored admission thresholds", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  const background = fs.readFileSync(path.join(extensionDir, "background.js"), "utf8");
+  const getSettings = script.match(/const getSettings = async[\s\S]*?\n};/)?.[0] || "";
+  assert.ok(getSettings, "getSettings must exist");
+  // 这三条硬钳制让界面上调宽的值被静默改回去，已移除
+  assert.doesNotMatch(getSettings, /Math\.(min|max)/);
+  assert.doesNotMatch(background, /Math\.min\(50, Number\(stored/);
+  assert.doesNotMatch(background, /Math\.max\(80, Number\(stored/);
+  assert.doesNotMatch(background, /Math\.min\(3, Number\(stored/);
+});
+
+test("re-evaluates scanned torrents after a policy change without a rescan", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  assert.match(script, /const reevaluateScannedTorrents =/);
+  const save = script.match(/const savePolicySettings = async[\s\S]*?\n};/)?.[0] || "";
+  assert.match(save, /reevaluateScannedTorrents\(\)/);
+});
+
 test("routes to a downloader by reachability because Chrome cannot read the WiFi SSID", () => {
   const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
   assert.match(script, /const selectActiveDownloader = async/);

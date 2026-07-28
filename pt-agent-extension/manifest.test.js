@@ -38,8 +38,8 @@ test("keeps the toolbar popup as the compact mode", () => {
   assert.equal(manifest.action.default_popup, "popup.html");
 });
 
-test("publishes the multi-downloader and site settings update as version 0.14.0", () => {
-  assert.equal(manifest.version, "0.14.0");
+test("publishes the configurable download policy update as version 0.15.0", () => {
+  assert.equal(manifest.version, "0.15.0");
 });
 
 test("service worker imports and migrates the local downloader preset", () => {

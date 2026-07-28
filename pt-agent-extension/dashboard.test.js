@@ -17,7 +17,8 @@ test("opens the dashboard in a new tab without requiring an M-Team source tab", 
 test("loads M-Team account, catalog, and download tokens directly from the extension", () => {
   const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
   assert.match(script, /const mteamRequest = async/);
-  assert.match(script, /PT_AGENT_PRIVATE_CONFIG\.mteamApiUrl/);
+  assert.match(script, /const site = activeSite\(\)/);
+  assert.match(script, /new URL\(String\(path\)\.replace\(\/\^\\\/\+\/, ""\), site\.apiUrl\)/);
   assert.match(script, /mteamRequest\("\/api\/member\/profile"/);
   assert.match(script, /mteamRequest\("\/api\/torrent\/search"/);
   assert.match(script, /mteamRequest\(\s*"\/api\/torrent\/genDlToken"/);
@@ -32,7 +33,6 @@ test("popup offers full-screen mode and a dedicated Free deadline column", () =>
   assert.match(html, /id="downloadsView"/);
   assert.match(html, /id="backfillDeadlineBtn"/);
   assert.match(html, /data-view="downloads"/);
-  assert.match(html, /M-Team API Key/);
   assert.match(html, /Free 截止时间/);
   assert.match(html, /发布时间/);
   assert.match(html, /id="uploaded"/);
@@ -61,10 +61,46 @@ test("keeps the source Free timestamp unchanged for the qBittorrent tag", () => 
   assert.match(script, /return `\$\{sourceTimestamp\[1\]\} \$\{sourceTimestamp\[2\]\}`/);
 });
 
-test("fills previously empty stored credentials from the local preset", () => {
+test("configures multiple downloaders and sites from a dedicated settings menu", () => {
+  const html = fs.readFileSync(path.join(extensionDir, "popup.html"), "utf8");
   const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
-  assert.match(script, /password:\s*stored\.password \|\| defaultQbSettings\.password/);
-  assert.match(script, /mteamApiKey:\s*stored\.mteamApiKey \|\| defaultQbSettings\.mteamApiKey/);
+  assert.match(html, /data-view="settings"/);
+  assert.match(html, /id="settingsView"/);
+  assert.match(html, /id="downloaderList"/);
+  assert.match(html, /id="siteList"/);
+  assert.match(html, /id="addDownloaderBtn"/);
+  assert.match(html, /id="addSiteBtn"/);
+  assert.match(html, /id="reprobeDownloadersBtn"/);
+  // 旧的单下载器内联表单必须彻底移除，避免两处配置互相覆盖
+  assert.doesNotMatch(html, /id="qbAddress"/);
+  assert.doesNotMatch(html, /id="mteamApiKey"/);
+  assert.doesNotMatch(script, /defaultQbSettings/);
+  assert.doesNotMatch(script, /saveQbSettings/);
+  ["downloader-registry.js", "downloader-store.js", "site-store.js",
+   "network-router.js", "host-permissions.js"].forEach((file) => {
+    assert.ok(
+      html.indexOf(`src="${file}"`) > -1 && html.indexOf(`src="${file}"`) < html.indexOf('src="popup.js"'),
+      `${file} must load before popup logic`
+    );
+  });
+});
+
+test("routes to a downloader by reachability because Chrome cannot read the WiFi SSID", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  assert.match(script, /const selectActiveDownloader = async/);
+  assert.match(script, /globalThis\.PT_AGENT_NETWORK_ROUTER/);
+  assert.match(script, /router\.selectDownloader\(state\.downloaders/);
+  assert.match(script, /adapter\.probe\(/);
+  // 没有主机权限时必须给出可操作的提示，而不是笼统的"连接失败"
+  assert.match(script, /缺少该地址的访问权限/);
+  assert.match(script, /hostPermissions\.ensure/);
+});
+
+test("builds every downloader client through the shared adapter layer", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  assert.match(script, /const createDownloaderClient = async/);
+  assert.match(script, /PT_AGENT_DOWNLOADER_TYPES\.createAdapter/);
+  assert.doesNotMatch(script, /PT_AGENT_QB\.createClient/);
 });
 
 test("resource buttons keep one-click download for risk but keep rejects blocked", () => {
@@ -163,9 +199,30 @@ test("sends recommended torrents directly to qBittorrent", () => {
   const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
   assert.match(script, /const pushRecommended =/);
   assert.match(script, /const enqueueTorrentDirectToQb = async/);
-  assert.match(script, /client\.ensureCategory\("PT_AGENT", savePath\)/);
+  assert.match(script, /client\.ensureCategory\(category, savePath\)/);
+  assert.match(script, /const category = downloader\.category \|\| "PT_AGENT"/);
   assert.match(script, /PT_AGENT_QB\.torrentTags\(torrent\.freeEndAt \|\| ""\)/);
   assert.match(script, /client\.addTorrent\(\{/);
+});
+
+test("uploads the .torrent bytes fetched in the browser instead of only handing qB a URL", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  assert.match(script, /const fetchTorrentFile = async/);
+  const enqueue = script.match(/const enqueueTorrentDirectToQb = async[\s\S]*?\n};/)?.[0] || "";
+  assert.match(enqueue, /const file = await fetchTorrentFile\(downloadUrl, operationId\)/);
+  assert.match(enqueue, /file,/);
+  assert.match(enqueue, /filename: `\$\{safeName\}\.torrent`/);
+  assert.match(enqueue, /route: file \? "file" : "url"/);
+});
+
+test("enforces local admission before enqueueing and caps a batch push", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  const enqueue = script.match(/const enqueueTorrent = async[\s\S]*?\n};/)?.[0] || "";
+  assert.match(enqueue, /const admission = admissionFor\(torrent, batchQueued\)/);
+  assert.match(enqueue, /if \(!admission\.allowed\)/);
+  assert.match(enqueue, /本地安全准入拒绝/);
+  const push = script.match(/const pushRecommended = async[\s\S]*?\n};/)?.[0] || "";
+  assert.match(push, /enqueueTorrent\(torrent, \{ batchQueued: succeeded \}\)/);
 });
 
 test("ships a persistent debug log page", () => {

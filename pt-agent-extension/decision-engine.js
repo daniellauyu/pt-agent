@@ -26,6 +26,7 @@ globalThis.PT_AGENT_DECISION = (() => {
       seeders <= 2 &&
       leechers >= Number(settings.scarceOpportunityMinLeechers || 20) &&
       demandRatio >= Number(settings.scarceOpportunityMinDemandRatio || 10) &&
+      // 稀缺资源不设独立体积上限：能不能下完由下面的 requiredSpeedBps 判断，比拍一个固定 GB 数更准。
       sizeGB <= Number(settings.maxTorrentSizeGB || 50) &&
       left !== null &&
       left >= Number(settings.scarceOpportunityMinFreeHours || 6) &&

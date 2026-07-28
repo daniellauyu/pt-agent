@@ -100,6 +100,26 @@ test("still rejects expired Free torrents", () => {
   assert.equal(result.decision, "reject");
 });
 
+test("gates scarce opportunities by required speed, not by a separate size cap", () => {
+  const engineSource = fs.readFileSync(path.join(__dirname, "decision-engine.js"), "utf8");
+  const popup = fs.readFileSync(path.join(__dirname, "popup.js"), "utf8");
+  const background = fs.readFileSync(path.join(__dirname, "background.js"), "utf8");
+  // 这个配置项从未被读取过（判断一直用 maxTorrentSizeGB），已删除，不要再加回来
+  assert.doesNotMatch(engineSource, /scarceOpportunityMaxSizeGB/);
+  assert.doesNotMatch(popup, /scarceOpportunityMaxSizeGB/);
+  assert.match(background, /delete updates\.ptAgentSettings\.scarceOpportunityMaxSizeGB/);
+
+  // 18.3GB 的稀缺资源仍应推荐：所需均速可行就行
+  const result = context.PT_AGENT_DECISION.evaluateTorrent({
+    ...baseTorrent,
+    sizeBytes: 18.3 * 1024 ** 3,
+    seeders: 1,
+    leechers: 560,
+    freeEndAt: "2026-07-25T04:01:12+08:00"
+  }, settings, Date.parse("2026-07-24T16:58:00+08:00"));
+  assert.equal(result.scarceHighDemandOpportunity, true);
+});
+
 test("does not recommend when downloads are not greater than seeders", () => {
   const result = context.PT_AGENT_DECISION.evaluateTorrent({
     ...baseTorrent,

@@ -37,8 +37,12 @@ globalThis.PT_AGENT_MTEAM_BACKFILL = (() => {
       "";
   };
 
+  // 同时识别插件当前写入的 ISO 8601 标签（ptagent-free-end=...T...+08:00）和早期的空格格式，
+  // 否则已经打过标签的任务每次回填都会被当成缺标签重新全量搜索 M-Team。
   const hasDeadlineTag = (tags) => {
-    return /\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}/.test(String(tags || ""));
+    const value = String(tags || "");
+    return /ptagent-free-end=\S/i.test(value) ||
+      /\d{4}-\d{2}-\d{2}[ T]\d{2}:\d{2}:\d{2}/.test(value);
   };
 
   const searchModes = (name) => {

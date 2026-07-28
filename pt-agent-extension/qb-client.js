@@ -140,6 +140,25 @@ globalThis.PT_AGENT_QB = (() => {
       return true;
     };
 
+    // 轻量可达性探测：只看能不能拿到 HTTP 响应，不登录，带超时。用于内外网自动选路。
+    const probe = async ({ timeoutMs = 3000 } = {}) => {
+      const startedAt = Date.now();
+      try {
+        const response = await fetchImpl(endpoint(settings, "app/version"), {
+          credentials: "include",
+          cache: "no-store",
+          signal: AbortSignal.timeout(timeoutMs)
+        });
+        return { ok: true, status: response.status, latencyMs: Date.now() - startedAt };
+      } catch (error) {
+        return {
+          ok: false,
+          error: String(error?.message || error),
+          latencyMs: Date.now() - startedAt
+        };
+      }
+    };
+
     const diagnose = async () => {
       const stages = [];
       const fail = (failedStage, label, error) => {
@@ -197,6 +216,7 @@ globalThis.PT_AGENT_QB = (() => {
 
     return {
       diagnose,
+      probe,
       login,
       getVersion,
       addTorrent,

@@ -1,8 +1,31 @@
-importScripts("logger.js", "private-config.js", "guard-engine.js", "qb-client.js");
+importScripts(
+  "logger.js",
+  "private-config.js",
+  "guard-engine.js",
+  "qb-client.js",
+  "downloader-registry.js",
+  "downloader-store.js",
+  "site-store.js",
+  "network-router.js",
+  "host-permissions.js"
+);
 
 globalThis.PT_AGENT_LOGGER.installStorageOwner();
 
+// 旧版的单下载器 / 站点配置在这里一次性迁移到多下载器、多站点结构。
+const migrateStores = async () => {
+  try {
+    await globalThis.PT_AGENT_DOWNLOADER_STORE.createStore().list();
+    await globalThis.PT_AGENT_SITE_STORE.createStore().list();
+  } catch (error) {
+    globalThis.PT_AGENT_LOGGER.legacy("settings:migrate-error", {
+      error: error.message || String(error)
+    });
+  }
+};
+
 chrome.runtime.onInstalled.addListener(() => {
+  void migrateStores();
   chrome.storage.local.get(["ptAgentSettings", "ptAgentQbSettings"], (stored) => {
     const updates = {};
     const privateConfig = globalThis.PT_AGENT_PRIVATE_CONFIG;
@@ -13,7 +36,6 @@ chrome.runtime.onInstalled.addListener(() => {
       minimumScore: 80,
       maxActiveDownloads: 3,
       minimumRatio: 1,
-      scarceOpportunityMaxSizeGB: 10,
       scarceOpportunityMinFreeHours: 6,
       scarceOpportunityMaxRequiredSpeedBps: 524288,
       scarceOpportunityMinLeechers: 20,
@@ -29,13 +51,16 @@ chrome.runtime.onInstalled.addListener(() => {
       minimumScore: Math.max(80, Number(stored.ptAgentSettings?.minimumScore || 80)),
       maxActiveDownloads: Math.min(3, Number(stored.ptAgentSettings?.maxActiveDownloads || 3))
     };
+    // 稀缺资源机会模型统一沿用 maxTorrentSizeGB，这个从未生效的专用上限已废弃，顺带清掉历史残留。
+    delete updates.ptAgentSettings.scarceOpportunityMaxSizeGB;
+    // 本地预设只用于补齐尚未填写的字段；用户在面板里保存过的地址、账号、密码不能被扩展更新覆盖。
     updates.ptAgentQbSettings = {
       ...(stored.ptAgentQbSettings || {}),
-      address: privateConfig.qbAddress,
-      username: privateConfig.qbUsername,
-      password: privateConfig.qbPassword,
+      address: stored.ptAgentQbSettings?.address || privateConfig.qbAddress,
+      username: stored.ptAgentQbSettings?.username || privateConfig.qbUsername,
+      password: stored.ptAgentQbSettings?.password || privateConfig.qbPassword,
       savePath: stored.ptAgentQbSettings?.savePath || privateConfig.qbSavePath,
-      mteamApiKey: privateConfig.mteamApiKey
+      mteamApiKey: stored.ptAgentQbSettings?.mteamApiKey || privateConfig.mteamApiKey
     };
     if (Object.keys(updates).length) chrome.storage.local.set(updates);
   });
@@ -50,8 +75,8 @@ const runFreeGuard = async () => {
   const operationId = globalThis.PT_AGENT_LOGGER.newOperationId();
   const stored = await chrome.storage.local.get([
     "ptAgentSettings",
-    "ptAgentQbSettings",
-    "ptAgentGuardStates"
+    "ptAgentGuardStates",
+    "ptAgentGuardRoute"
   ]);
   const settings = {
     guardMinutes: 10,
@@ -62,22 +87,36 @@ const runFreeGuard = async () => {
   };
   if (!settings.guardMonitorEnabled) return;
 
-  const privateConfig = globalThis.PT_AGENT_PRIVATE_CONFIG;
-  const qbSettings = {
-    address: privateConfig.qbAddress,
-    username: privateConfig.qbUsername,
-    password: privateConfig.qbPassword,
-    ...(stored.ptAgentQbSettings || {})
-  };
-  if (!qbSettings.address || !qbSettings.username || !qbSettings.password) return;
+  const onLog = (event, data) => globalThis.PT_AGENT_LOGGER.legacy(event, data, { operationId });
+  const permissions = globalThis.PT_AGENT_HOST_PERMISSIONS.createManager();
+  const downloaders = await globalThis.PT_AGENT_DOWNLOADER_STORE.createStore().list();
+  const usable = downloaders.filter((item) => item.enabled && item.address && item.password);
+  if (!usable.length) return;
 
   try {
-    globalThis.PT_AGENT_LOGGER.legacy("guard:scan-start", null, { operationId });
-    const client = globalThis.PT_AGENT_QB.createClient(
-      qbSettings,
-      undefined,
-      (event, data) => globalThis.PT_AGENT_LOGGER.legacy(event, data, { operationId })
-    );
+    globalThis.PT_AGENT_LOGGER.legacy("guard:scan-start", { downloaders: usable.length }, { operationId });
+    // Service Worker 里不能弹权限申请（没有用户手势），只能检查；缺权限的下载器直接跳过并记审计。
+    const selection = await globalThis.PT_AGENT_NETWORK_ROUTER.selectDownloader(usable, {
+      probe: async (downloader) => {
+        if (!(await permissions.has(downloader.address))) {
+          return { ok: false, error: "缺少主机访问权限，请在插件设置里授权" };
+        }
+        return globalThis.PT_AGENT_DOWNLOADER_TYPES
+          .createAdapter(downloader, { onLog })
+          .probe({ timeoutMs: globalThis.PT_AGENT_NETWORK_ROUTER.DEFAULT_TIMEOUT_MS });
+      },
+      cache: stored.ptAgentGuardRoute
+    });
+    await chrome.storage.local.set({ ptAgentGuardRoute: selection.cache });
+    onLog("guard:route", {
+      reason: selection.reason,
+      active: selection.downloader?.name || null,
+      probes: selection.probes
+    });
+    if (!selection.downloader || selection.reason === "fallback") {
+      throw new Error(globalThis.PT_AGENT_NETWORK_ROUTER.describe(selection));
+    }
+    const client = globalThis.PT_AGENT_DOWNLOADER_TYPES.createAdapter(selection.downloader, { onLog });
     await client.login();
     const torrents = await client.listTorrents("all");
     const previousStates = stored.ptAgentGuardStates || {};

@@ -5,7 +5,11 @@ const state = {
   activeView: "resources",
   sourceTabId: null,
   policySettings: null,
-  qbSettings: null,
+  downloaders: [],
+  sites: [],
+  activeDownloader: null,
+  routeCache: null,
+  lastSelection: null,
   qbTorrents: [],
   excludedTorrents: [],
   qbSeedingSummary: null,
@@ -16,6 +20,9 @@ const state = {
 
 const $ = (id) => document.getElementById(id);
 const exclusionStore = globalThis.PT_AGENT_EXCLUSIONS.createStore();
+const downloaderStore = globalThis.PT_AGENT_DOWNLOADER_STORE.createStore();
+const siteStore = globalThis.PT_AGENT_SITE_STORE.createStore();
+const hostPermissions = globalThis.PT_AGENT_HOST_PERMISSIONS.createManager();
 
 const isTorrentExcluded = (torrent) => {
   return exclusionStore.isExcluded(torrent, state.excludedTorrents);
@@ -179,7 +186,6 @@ const defaultSettings = {
   minimumScore: 80,
   maxActiveDownloads: 3,
   minimumRatio: 1,
-  scarceOpportunityMaxSizeGB: 10,
   scarceOpportunityMinFreeHours: 6,
   scarceOpportunityMaxRequiredSpeedBps: 512 * 1024,
   scarceOpportunityMinLeechers: 20,
@@ -189,14 +195,6 @@ const defaultSettings = {
   guardExecutor: "extension",
   rejectHr: true,
   rejectMissingFreeEnd: true
-};
-
-const defaultQbSettings = {
-  address: globalThis.PT_AGENT_PRIVATE_CONFIG.qbAddress,
-  username: globalThis.PT_AGENT_PRIVATE_CONFIG.qbUsername,
-  password: globalThis.PT_AGENT_PRIVATE_CONFIG.qbPassword,
-  savePath: globalThis.PT_AGENT_PRIVATE_CONFIG.qbSavePath,
-  mteamApiKey: globalThis.PT_AGENT_PRIVATE_CONFIG.mteamApiKey
 };
 
 const bytesToGB = (bytes) => {
@@ -319,44 +317,57 @@ const appendAuditEvent = async (event, operationId = state.operationId) => {
   renderAuditEvents();
 };
 
-const getQbSettings = async () => {
-  const data = await chrome.storage.local.get("ptAgentQbSettings");
-  const stored = data.ptAgentQbSettings || {};
-  return {
-    ...defaultQbSettings,
-    ...stored,
-    address: stored.address || defaultQbSettings.address,
-    username: stored.username || defaultQbSettings.username,
-    password: stored.password || defaultQbSettings.password,
-    mteamApiKey: stored.mteamApiKey || defaultQbSettings.mteamApiKey
-  };
+const activeSite = () => {
+  return state.sites.find((site) => site.enabled && site.type === "mteam") ||
+    state.sites.find((site) => site.enabled) ||
+    null;
 };
 
-const readQbSettingsForm = () => ({
-  address: $("qbAddress").value.trim(),
-  username: $("qbUsername").value.trim(),
-  password: $("qbPassword").value,
-  savePath: $("qbSavePath").value.trim(),
-  mteamApiKey: $("mteamApiKey").value.trim()
-});
+const siteUrl = () => activeSite()?.siteUrl || globalThis.PT_AGENT_PRIVATE_CONFIG.mteamSiteUrl;
 
-const fillQbSettingsForm = (settings) => {
-  $("qbAddress").value = settings.address || "";
-  $("qbUsername").value = settings.username || "";
-  $("qbPassword").value = settings.password || "";
-  $("qbSavePath").value = settings.savePath || "";
-  $("mteamApiKey").value = settings.mteamApiKey || "";
-};
-
-const saveQbSettings = async ({ announce = true } = {}) => {
-  const settings = readQbSettingsForm();
-  if (!/^https?:\/\//i.test(settings.address)) {
-    throw new Error("qB 地址必须以 http:// 或 https:// 开头");
+const probeDownloader = async (downloader, operationId) => {
+  // 没有主机权限时 fetch 必然失败，先明确区分开，否则会被误报成"网络不可达"。
+  if (!(await hostPermissions.has(downloader.address))) {
+    return { ok: false, error: "缺少该地址的访问权限，请在设置里点「授权」" };
   }
-  state.qbSettings = settings;
-  await chrome.storage.local.set({ ptAgentQbSettings: settings });
-  if (announce) setQbMessage("下载器设置已保存。", "success");
-  return settings;
+  const adapter = globalThis.PT_AGENT_DOWNLOADER_TYPES.createAdapter(
+    downloader,
+    { onLog: (event, data) => debug(event, data, operationId) }
+  );
+  return adapter.probe({ timeoutMs: globalThis.PT_AGENT_NETWORK_ROUTER.DEFAULT_TIMEOUT_MS });
+};
+
+// 按可达性选出当前该用哪台下载器（替代读不到的 WiFi SSID 判断）。
+const selectActiveDownloader = async ({ force = false, operationId } = {}) => {
+  const router = globalThis.PT_AGENT_NETWORK_ROUTER;
+  const selection = await router.selectDownloader(state.downloaders, {
+    probe: (downloader) => probeDownloader(downloader, operationId),
+    cache: force ? null : state.routeCache
+  });
+  state.routeCache = selection.cache;
+  state.activeDownloader = selection.downloader;
+  state.lastSelection = selection;
+  debug(
+    "route:select",
+    { reason: selection.reason, active: selection.downloader?.name || null, probes: selection.probes },
+    operationId
+  );
+  renderActiveDownloader();
+  return selection;
+};
+
+const requireActiveDownloader = async (operationId) => {
+  if (!state.downloaders.length) {
+    throw new Error("尚未配置下载器，请到「设置 → 下载器」添加一台");
+  }
+  if (!state.activeDownloader) await selectActiveDownloader({ operationId });
+  const downloader = state.activeDownloader;
+  if (!downloader) throw new Error("没有可用的下载器");
+  if (!downloader.password) throw new Error(`下载器「${downloader.name}」缺少密码`);
+  if (!(await hostPermissions.has(downloader.address))) {
+    throw new Error(`缺少「${downloader.address}」的访问权限，请到「设置 → 下载器」点「授权」`);
+  }
+  return downloader;
 };
 
 const setQbMessage = (message, type = "") => {
@@ -369,16 +380,14 @@ const setQbStatus = (text, type) => {
   $("qbStatus").className = `site-status ${type}`;
 };
 
-const createQbClient = (
+// 统一入口：先按网络可达性选出下载器，再通过适配层拿到客户端。
+const createDownloaderClient = async (
   operationId = state.operationId || globalThis.PT_AGENT_LOGGER.newOperationId()
 ) => {
-  if (!state.qbSettings) throw new Error("请先保存下载器设置");
-  if (!state.qbSettings.password) throw new Error("请先填写 qBittorrent 密码");
-  return globalThis.PT_AGENT_QB.createClient(
-    state.qbSettings,
-    undefined,
-    (event, data) => debug(event, data, operationId)
-  );
+  const downloader = await requireActiveDownloader(operationId);
+  return globalThis.PT_AGENT_DOWNLOADER_TYPES.createAdapter(downloader, {
+    onLog: (event, data) => debug(event, data, operationId)
+  });
 };
 
 const mteamRequest = async (
@@ -388,8 +397,9 @@ const mteamRequest = async (
   const operationId = suppliedOperationId
     || state.operationId
     || globalThis.PT_AGENT_LOGGER.newOperationId();
-  if (!state.qbSettings?.mteamApiKey) throw new Error("缺少 M-Team API Key");
-  const headers = { "x-api-key": state.qbSettings.mteamApiKey };
+  const site = activeSite();
+  if (!site?.apiKey) throw new Error("缺少站点 API Key，请到「设置 → 站点」填写");
+  const headers = { "x-api-key": site.apiKey };
   let body;
   if (json !== undefined) {
     headers["Content-Type"] = "application/json";
@@ -402,7 +412,7 @@ const mteamRequest = async (
     : form !== undefined
       ? Object.fromEntries([...form.entries()].map(([k, v]) => [k, String(v).slice(0, 60)]))
       : null;
-  const url = new URL(String(path).replace(/^\/+/, ""), globalThis.PT_AGENT_PRIVATE_CONFIG.mteamApiUrl).toString();
+  const url = new URL(String(path).replace(/^\/+/, ""), site.apiUrl).toString();
   debug("mteam:req", { path, params }, operationId);
   let response;
   try {
@@ -517,7 +527,7 @@ const fetchMteamFreeCatalog = async (operationId) => {
         leechers: Number(row.status?.leechers || 0),
         completed: Number(row.status?.timesCompleted || 0),
         hasHr: false,
-        detailUrl: new URL(`/detail/${row.id}`, globalThis.PT_AGENT_PRIVATE_CONFIG.mteamSiteUrl).toString(),
+        detailUrl: new URL(`/detail/${row.id}`, siteUrl()).toString(),
         downloadUrl: "",
         publishedAt: row.createdDate || row.status?.createdDate || "",
         source: `mteam-api-${area.mode}`
@@ -585,9 +595,8 @@ const backfillMteamDeadlines = async () => {
   button.disabled = true;
   button.textContent = "正在回查…";
   try {
-    state.qbSettings = await saveQbSettings({ announce: false });
-    if (!state.qbSettings.mteamApiKey) throw new Error("缺少 M-Team API Key");
-    const client = createQbClient(operationId);
+    if (!activeSite()?.apiKey) throw new Error("缺少站点 API Key，请到「设置 → 站点」填写");
+    const client = await createDownloaderClient(operationId);
     await client.login();
     const allTorrents = await client.listTorrents("all");
     const candidates = allTorrents.filter((torrent) => {
@@ -633,8 +642,8 @@ const resolveTorrentDownloadUrl = async (torrent, operationId) => {
   if (!torrent.torrentId) {
     throw new Error("无法识别 M-Team 种子 ID");
   }
-  if (!state.qbSettings?.mteamApiKey) {
-    throw new Error("请先填写 M-Team API Key");
+  if (!activeSite()?.apiKey) {
+    throw new Error("请先到「设置 → 站点」填写 API Key");
   }
   const body = new FormData();
   body.set("id", String(torrent.torrentId));
@@ -695,6 +704,315 @@ const guardPresentation = (result) => {
     label: labels[result.status] || result.status,
     detail: result.status === "safe" || result.status === "cannot_finish" ? eta : ""
   };
+};
+
+const renderActiveDownloader = () => {
+  const badge = $("activeDownloaderBadge");
+  const active = state.activeDownloader;
+  if (badge) {
+    badge.textContent = active ? active.name : "未选择";
+    badge.className = `site-status ${active && state.lastSelection?.reason !== "fallback" ? "ok" : "bad"}`;
+  }
+  const name = $("sidebarDownloaderName");
+  const mode = $("sidebarDownloaderMode");
+  if (name) name.textContent = active ? active.name : "未选择";
+  if (mode) {
+    mode.textContent = state.lastSelection
+      ? globalThis.PT_AGENT_NETWORK_ROUTER.describe(state.lastSelection)
+      : "按可达性自动选路";
+  }
+};
+
+const downloaderTypeOptions = (selected) => {
+  return globalThis.PT_AGENT_DOWNLOADER_TYPES.list().map((type) => `
+    <option value="${escapeHtml(type.id)}" ${type.id === selected ? "selected" : ""} ${type.implemented ? "" : "disabled"}>
+      ${escapeHtml(type.name)}${type.implemented ? "" : "（即将支持）"}
+    </option>
+  `).join("");
+};
+
+const renderDownloaderSettings = async () => {
+  const list = $("downloaderList");
+  if (!list) return;
+  if (!state.downloaders.length) {
+    list.innerHTML = `<div class="empty compact-empty">尚未配置下载器，点右上角「新增下载器」。</div>`;
+    renderActiveDownloader();
+    return;
+  }
+  const permissions = await Promise.all(
+    state.downloaders.map((item) => hostPermissions.has(item.address))
+  );
+  list.innerHTML = state.downloaders.map((item, index) => {
+    const isActive = state.activeDownloader?.id === item.id;
+    const granted = permissions[index];
+    const probe = state.lastSelection?.probes?.find((entry) => entry.id === item.id);
+    const probeText = !probe
+      ? ""
+      : probe.ok
+        ? `可达 ${probe.latencyMs}ms`
+        : `不可达：${probe.error}`;
+    return `
+      <div class="settings-card ${isActive ? "active" : ""}" data-downloader-id="${escapeHtml(item.id)}">
+        <div class="settings-card-head">
+          <div class="settings-card-title">
+            <strong>${escapeHtml(item.name)}</strong>
+            ${isActive ? `<span class="settings-chip ok">当前使用</span>` : ""}
+            ${item.isPrivate ? `<span class="settings-chip">内网</span>` : `<span class="settings-chip">公网</span>`}
+            ${item.enabled ? "" : `<span class="settings-chip off">已停用</span>`}
+            ${granted ? "" : `<span class="settings-chip warn">未授权</span>`}
+          </div>
+          <div class="settings-card-order">
+            <button class="btn btn-quiet icon-btn" type="button" data-move="up" ${index === 0 ? "disabled" : ""} title="上移（越靠前越优先探测）">↑</button>
+            <button class="btn btn-quiet icon-btn" type="button" data-move="down" ${index === state.downloaders.length - 1 ? "disabled" : ""} title="下移">↓</button>
+          </div>
+        </div>
+        <div class="settings-grid">
+          <label><span>名称</span><input data-field="name" type="text" value="${escapeHtml(item.name)}"></label>
+          <label><span>类型</span><select data-field="type">${downloaderTypeOptions(item.type)}</select></label>
+          <label><span>地址</span><input data-field="address" type="url" value="${escapeHtml(item.address)}" placeholder="http://192.168.1.10:8080/"></label>
+          <label><span>账号</span><input data-field="username" type="text" value="${escapeHtml(item.username)}" autocomplete="off"></label>
+          <label><span>密码</span><input data-field="password" type="password" value="${escapeHtml(item.password)}" autocomplete="off"></label>
+          <label><span>下载目录（可选）</span><input data-field="savePath" type="text" value="${escapeHtml(item.savePath)}" placeholder="使用下载器默认目录"></label>
+          <label><span>分类</span><input data-field="category" type="text" value="${escapeHtml(item.category)}"></label>
+          <label><span>备注</span><input data-field="note" type="text" value="${escapeHtml(item.note)}" placeholder="例如：家里内网 / 外网域名"></label>
+          <label class="settings-switch"><input data-field="enabled" type="checkbox" ${item.enabled ? "checked" : ""}><span>参与自动选路</span></label>
+        </div>
+        <div class="settings-card-foot">
+          <span class="settings-probe ${probe?.ok ? "ok" : probe ? "bad" : ""}">${escapeHtml(probeText)}</span>
+          <div class="settings-card-actions">
+            ${granted ? "" : `<button class="btn btn-quiet" type="button" data-action="grant">授权访问</button>`}
+            <button class="btn btn-quiet" type="button" data-action="test">测试连接</button>
+            <button class="btn btn-danger" type="button" data-action="delete">删除</button>
+            <button class="btn btn-primary" type="button" data-action="save">保存</button>
+          </div>
+        </div>
+      </div>
+    `;
+  }).join("");
+
+  list.querySelectorAll("[data-downloader-id]").forEach((card) => {
+    const id = card.dataset.downloaderId;
+    const read = () => {
+      const value = { id };
+      card.querySelectorAll("[data-field]").forEach((input) => {
+        value[input.dataset.field] = input.type === "checkbox" ? input.checked : input.value.trim();
+      });
+      return value;
+    };
+    card.querySelector('[data-action="save"]')?.addEventListener("click", () => saveDownloaderCard(read()));
+    card.querySelector('[data-action="grant"]')?.addEventListener("click", () => grantDownloaderAccess(read()));
+    card.querySelector('[data-action="test"]')?.addEventListener("click", () => testDownloaderCard(read()));
+    card.querySelector('[data-action="delete"]')?.addEventListener("click", () => deleteDownloaderCard(id, read().name));
+    card.querySelectorAll("[data-move]").forEach((button) => {
+      button.addEventListener("click", () => moveDownloader(id, button.dataset.move === "up" ? -1 : 1));
+    });
+  });
+  renderActiveDownloader();
+};
+
+const setProbeMessage = (message, type = "") => {
+  const node = $("probeResult");
+  if (!node) return;
+  node.textContent = message;
+  node.className = `downloader-message ${type}`.trim();
+};
+
+const reloadDownloaders = async () => {
+  state.downloaders = await downloaderStore.list();
+  await renderDownloaderSettings();
+};
+
+const saveDownloaderCard = async (value) => {
+  const record = globalThis.PT_AGENT_DOWNLOADER_STORE.normalize(value);
+  const errors = globalThis.PT_AGENT_DOWNLOADER_STORE.validate(record);
+  if (errors.length) {
+    setProbeMessage(errors.join("；"), "error");
+    return;
+  }
+  // 地址可能刚改过，保存时顺带把新地址的主机权限申请掉（此处仍在用户手势内）。
+  try {
+    await hostPermissions.ensure(record.address);
+  } catch (_) {}
+  await downloaderStore.upsert(record);
+  state.routeCache = null;
+  await reloadDownloaders();
+  await selectActiveDownloader({ force: true });
+  setProbeMessage(`已保存「${record.name}」。`, "success");
+};
+
+const grantDownloaderAccess = async (value) => {
+  const record = globalThis.PT_AGENT_DOWNLOADER_STORE.normalize(value);
+  try {
+    const result = await hostPermissions.ensure(record.address);
+    setProbeMessage(
+      result.granted
+        ? `已获得 ${record.address} 的访问权限。`
+        : `你拒绝了 ${record.address} 的访问授权，该下载器无法连接。`,
+      result.granted ? "success" : "error"
+    );
+  } catch (error) {
+    setProbeMessage(error.message || String(error), "error");
+  }
+  await renderDownloaderSettings();
+};
+
+const testDownloaderCard = async (value) => {
+  const record = globalThis.PT_AGENT_DOWNLOADER_STORE.normalize(value);
+  const operationId = globalThis.PT_AGENT_LOGGER.newOperationId();
+  setProbeMessage(`正在测试「${record.name}」…`);
+  try {
+    if (!(await hostPermissions.has(record.address))) {
+      await hostPermissions.ensure(record.address);
+    }
+    const adapter = globalThis.PT_AGENT_DOWNLOADER_TYPES.createAdapter(record, {
+      onLog: (event, data) => debug(event, data, operationId)
+    });
+    await adapter.login();
+    const version = await adapter.getVersion();
+    setProbeMessage(`「${record.name}」连接成功：${version || "未知版本"}。`, "success");
+  } catch (error) {
+    setProbeMessage(`「${record.name}」连接失败：${error.message || String(error)}`, "error");
+  }
+  await renderDownloaderSettings();
+};
+
+const deleteDownloaderCard = async (id, name) => {
+  if (!confirm(`确定删除下载器「${name || id}」吗？只删除插件里的配置，不影响下载器本身。`)) return;
+  await downloaderStore.remove(id);
+  state.routeCache = null;
+  state.activeDownloader = null;
+  await reloadDownloaders();
+  setProbeMessage("已删除该下载器配置。", "success");
+};
+
+const moveDownloader = async (id, offset) => {
+  state.downloaders = await downloaderStore.move(id, offset);
+  state.routeCache = null;
+  await renderDownloaderSettings();
+  setProbeMessage("已调整探测优先级，顺序靠前的会先被尝试。", "success");
+};
+
+const addDownloader = async () => {
+  const types = globalThis.PT_AGENT_DOWNLOADER_TYPES;
+  await downloaderStore.upsert({
+    name: `下载器 ${state.downloaders.length + 1}`,
+    type: "qbittorrent",
+    address: types.get("qbittorrent").defaultAddress,
+    username: "",
+    password: "",
+    enabled: true
+  });
+  await reloadDownloaders();
+  setProbeMessage("已新增一条下载器，请填写地址和账号后点「保存」。", "success");
+};
+
+const reprobeDownloaders = async () => {
+  const button = $("reprobeDownloadersBtn");
+  button.disabled = true;
+  const originalText = button.textContent;
+  button.textContent = "探测中…";
+  try {
+    const selection = await selectActiveDownloader({ force: true });
+    setProbeMessage(
+      globalThis.PT_AGENT_NETWORK_ROUTER.describe(selection),
+      selection.reason === "fallback" || selection.reason === "none" ? "error" : "success"
+    );
+    await renderDownloaderSettings();
+  } finally {
+    button.disabled = false;
+    button.textContent = originalText;
+  }
+};
+
+const siteTypeOptions = (selected) => {
+  return Object.values(globalThis.PT_AGENT_SITE_STORE.SITE_TYPES).map((type) => `
+    <option value="${escapeHtml(type.id)}" ${type.id === selected ? "selected" : ""}>${escapeHtml(type.name)}</option>
+  `).join("");
+};
+
+const setSiteMessage = (message, type = "") => {
+  const node = $("siteMessage");
+  if (!node) return;
+  node.textContent = message;
+  node.className = `downloader-message ${type}`.trim();
+};
+
+const renderSiteSettings = () => {
+  const list = $("siteList");
+  if (!list) return;
+  if (!state.sites.length) {
+    list.innerHTML = `<div class="empty compact-empty">尚未配置站点。</div>`;
+    return;
+  }
+  const current = activeSite();
+  list.innerHTML = state.sites.map((item) => `
+    <div class="settings-card ${current?.id === item.id ? "active" : ""}" data-site-id="${escapeHtml(item.id)}">
+      <div class="settings-card-head">
+        <div class="settings-card-title">
+          <strong>${escapeHtml(item.name)}</strong>
+          ${current?.id === item.id ? `<span class="settings-chip ok">当前使用</span>` : ""}
+          ${item.enabled ? "" : `<span class="settings-chip off">已停用</span>`}
+          ${item.apiKey ? "" : `<span class="settings-chip warn">缺少 API Key</span>`}
+        </div>
+      </div>
+      <div class="settings-grid">
+        <label><span>名称</span><input data-field="name" type="text" value="${escapeHtml(item.name)}"></label>
+        <label><span>类型</span><select data-field="type">${siteTypeOptions(item.type)}</select></label>
+        <label><span>站点地址</span><input data-field="siteUrl" type="url" value="${escapeHtml(item.siteUrl)}"></label>
+        <label><span>API 地址</span><input data-field="apiUrl" type="url" value="${escapeHtml(item.apiUrl)}"></label>
+        <label><span>API Key</span><input data-field="apiKey" type="password" value="${escapeHtml(item.apiKey)}" autocomplete="off"></label>
+        <label><span>备注</span><input data-field="note" type="text" value="${escapeHtml(item.note)}"></label>
+        <label class="settings-switch"><input data-field="enabled" type="checkbox" ${item.enabled ? "checked" : ""}><span>启用</span></label>
+      </div>
+      <div class="settings-card-foot">
+        <span></span>
+        <div class="settings-card-actions">
+          <button class="btn btn-danger" type="button" data-action="delete">删除</button>
+          <button class="btn btn-primary" type="button" data-action="save">保存</button>
+        </div>
+      </div>
+    </div>
+  `).join("");
+
+  list.querySelectorAll("[data-site-id]").forEach((card) => {
+    const id = card.dataset.siteId;
+    const read = () => {
+      const value = { id };
+      card.querySelectorAll("[data-field]").forEach((input) => {
+        value[input.dataset.field] = input.type === "checkbox" ? input.checked : input.value.trim();
+      });
+      return value;
+    };
+    card.querySelector('[data-action="save"]')?.addEventListener("click", () => saveSiteCard(read()));
+    card.querySelector('[data-action="delete"]')?.addEventListener("click", () => deleteSiteCard(id, read().name));
+  });
+};
+
+const saveSiteCard = async (value) => {
+  const record = globalThis.PT_AGENT_SITE_STORE.normalize(value);
+  const errors = globalThis.PT_AGENT_SITE_STORE.validate(record);
+  if (errors.length) {
+    setSiteMessage(errors.join("；"), "error");
+    return;
+  }
+  await siteStore.upsert(record);
+  state.sites = await siteStore.list();
+  renderSiteSettings();
+  setSiteMessage(`已保存站点「${record.name}」。`, "success");
+};
+
+const deleteSiteCard = async (id, name) => {
+  if (!confirm(`确定删除站点「${name || id}」吗？`)) return;
+  state.sites = await siteStore.remove(id);
+  renderSiteSettings();
+  setSiteMessage("已删除该站点配置。", "success");
+};
+
+const addSite = async () => {
+  await siteStore.upsert({ name: `站点 ${state.sites.length + 1}`, type: "mteam", enabled: true });
+  state.sites = await siteStore.list();
+  renderSiteSettings();
+  setSiteMessage("已新增一条站点，请填写地址和 API Key 后点「保存」。", "success");
 };
 
 const renderAuditEvents = () => {
@@ -827,8 +1145,7 @@ const excludeAndDeleteTorrent = async (torrent) => {
     deleteFiles: true
   }, operationId).catch(() => {});
   try {
-    state.qbSettings = await saveQbSettings({ announce: false });
-    const client = createQbClient(operationId);
+    const client = await createDownloaderClient(operationId);
     await client.login();
     await client.deleteTorrents(torrent.hash, true);
     state.qbTorrents = state.qbTorrents.filter((item) => item.hash !== torrent.hash);
@@ -865,8 +1182,7 @@ const refreshQbTorrents = async ({
   operationId = globalThis.PT_AGENT_LOGGER.newOperationId()
 } = {}) => {
   try {
-    state.qbSettings = await saveQbSettings({ announce: false });
-    const client = createQbClient(operationId);
+    const client = await createDownloaderClient(operationId);
     await client.login();
     state.qbTorrents = await client.listTorrents("all");
     state.qbSeedingSummary = globalThis.PT_AGENT_QB.summarizeMteamSeeding(state.qbTorrents);
@@ -880,8 +1196,13 @@ const refreshQbTorrents = async ({
     await loadAuditEvents();
     // qB 数据到位后必定重渲染资源列表，让「下载中/已下载」状态即时生效（修复重开插件后状态丢失）。
     if (state.evaluated.length) renderList();
-    setQbStatus("已连接", "ok");
-    if (!silent) setQbMessage(`qBittorrent 当前有 ${downloadingCount} 个下载中任务。`, "success");
+    setQbStatus(`已连接 · ${state.activeDownloader?.name || ""}`.trim(), "ok");
+    if (!silent) {
+      setQbMessage(
+        `${state.activeDownloader?.name || "下载器"} 当前有 ${downloadingCount} 个下载中任务。`,
+        "success"
+      );
+    }
     return true;
   } catch (error) {
     debug("qb:refresh-failed", String(error?.message || error), operationId);
@@ -894,12 +1215,14 @@ const refreshQbTorrents = async ({
 const testQbConnection = async () => {
   const operationId = globalThis.PT_AGENT_LOGGER.newOperationId();
   try {
-    state.qbSettings = await saveQbSettings({ announce: false });
-    const client = createQbClient(operationId);
+    const client = await createDownloaderClient(operationId);
     await client.login();
     const version = await client.getVersion();
     setQbStatus("已连接", "ok");
-    setQbMessage(`qBittorrent ${version || "未知版本"} 连接成功。`, "success");
+    setQbMessage(
+      `${state.activeDownloader?.name || "下载器"}（${version || "未知版本"}）连接成功。`,
+      "success"
+    );
   } catch (error) {
     setQbStatus("连接失败", "bad");
     setQbMessage(
@@ -942,10 +1265,10 @@ const diagnoseQbConnection = async () => {
   button.disabled = true;
   button.textContent = "检测中…";
   try {
-    state.qbSettings = await saveQbSettings({ announce: false });
-    const client = createQbClient(globalThis.PT_AGENT_LOGGER.newOperationId());
+    const downloader = await requireActiveDownloader();
+    const client = await createDownloaderClient(globalThis.PT_AGENT_LOGGER.newOperationId());
     const result = await client.diagnose();
-    renderQbDiagnostic(result, state.qbSettings.address);
+    renderQbDiagnostic(result, downloader.address);
     setQbStatus(result.ok ? "诊断通过" : "诊断失败", result.ok ? "ok" : "bad");
     setQbMessage(
       result.ok
@@ -964,7 +1287,7 @@ const diagnoseQbConnection = async () => {
         detail: error.message || String(error)
       }]
     };
-    renderQbDiagnostic(result, $("qbAddress").value.trim());
+    renderQbDiagnostic(result, state.activeDownloader?.address || "");
     setQbStatus("诊断失败", "bad");
     setQbMessage(error.message || String(error), "error");
   } finally {
@@ -973,31 +1296,64 @@ const diagnoseQbConnection = async () => {
   }
 };
 
+// 在浏览器侧抓取 .torrent 文件字节（插件有 M-Team 权限与用户会话），失败则返回 null 由调用方回退到 URL。
+const fetchTorrentFile = async (downloadUrl, operationId) => {
+  try {
+    const response = await fetch(downloadUrl, { credentials: "omit" });
+    debug(
+      "qb:torrent-fetch",
+      { ok: response.ok, status: response.status, type: response.headers.get("content-type") },
+      operationId
+    );
+    if (!response.ok) return null;
+    const blob = await response.blob();
+    // 校验确实是种子文件：排除 HTML 错误页和明显过小的响应。
+    const contentType = (response.headers.get("content-type") || "").toLowerCase();
+    if (contentType.includes("html") || blob.size < 40) {
+      debug("qb:torrent-fetch-suspect", { size: blob.size, contentType }, operationId);
+      return null;
+    }
+    return blob;
+  } catch (error) {
+    debug("qb:torrent-fetch-error", String(error?.message || error), operationId);
+    return null;
+  }
+};
+
 const enqueueTorrentDirectToQb = async (torrent, downloadUrl, operationId) => {
-  state.qbSettings = await saveQbSettings({ announce: false });
-  const client = createQbClient(operationId);
-  const savePath = state.qbSettings?.savePath || "";
+  const downloader = await requireActiveDownloader(operationId);
+  const client = await createDownloaderClient(operationId);
+  const savePath = downloader.savePath || "";
+  const category = downloader.category || "PT_AGENT";
   await client.login();
-  await client.ensureCategory("PT_AGENT", savePath);
+  await client.ensureCategory(category, savePath);
   const tag = [
     globalThis.PT_AGENT_QB.torrentTags(torrent.freeEndAt || ""),
     globalThis.PT_AGENT_QB.sourceTag(torrent.site, torrent.torrentId)
   ].filter(Boolean).join(", ");
-  // 交给 qB 直接抓取下载链接（旧版本可用的方式）：qB 与浏览器可能出口 IP 一致，服务端抓取更稳。
+  // 优先在浏览器侧取到 .torrent 字节再上传：qB 服务端去抓 M-Team 链接可能因鉴权/出口 IP 失败并静默丢弃。
+  const file = await fetchTorrentFile(downloadUrl, operationId);
+  const safeName = String(torrent.title || torrent.torrentId || "download")
+    .replace(/[^\w.-]+/g, "_")
+    .slice(0, 80);
   debug(
     "qb:add",
-    { route: "url", hasDownloadUrl: Boolean(downloadUrl), tag, savePath },
+    { route: file ? "file" : "url", fileSize: file?.size || 0, tag, savePath, category, downloader: downloader.name },
     operationId
   );
   const addResult = await client.addTorrent({
     url: downloadUrl,
+    file,
+    filename: `${safeName}.torrent`,
     tag,
     savePath,
-    category: "PT_AGENT"
+    category
   });
   debug("qb:add-result", addResult, operationId);
   return {
-    route: "url",
+    route: file ? "file" : "url",
+    downloader: downloader.name,
+    category,
     evaluation: {
       decision: torrent.decision,
       score: Number(torrent.score || 0)
@@ -1005,7 +1361,7 @@ const enqueueTorrentDirectToQb = async (torrent, downloadUrl, operationId) => {
   };
 };
 
-const enqueueTorrent = async (torrent, { manualOverride = false } = {}) => {
+const enqueueTorrent = async (torrent, { manualOverride = false, batchQueued = 0 } = {}) => {
   const operationId = globalThis.PT_AGENT_LOGGER.newOperationId();
   const key = `${torrent.site}:${torrent.torrentId || torrent.rowIndex}`;
   state.qbPushStatus.set(key, "loading");
@@ -1019,13 +1375,26 @@ const enqueueTorrent = async (torrent, { manualOverride = false } = {}) => {
       hasDownloadUrl: Boolean(torrent.downloadUrl),
       freeEndAt: torrent.freeEndAt || null,
       decision: torrent.decision,
-      manualOverride
+      manualOverride,
+      batchQueued
     },
     operationId
   );
   try {
     if (!torrent.freeEndAt && !manualOverride) {
       throw new Error("缺少 Free 截止时间，未发送到 qBittorrent");
+    }
+    // 本地安全准入：并发上限、评分、体积、Free 剩余和分享率都在入队前真正拦截，手动覆盖除外。
+    if (!manualOverride) {
+      const admission = admissionFor(torrent, batchQueued);
+      debug(
+        "qb:admission",
+        { title: torrent.title, allowed: admission.allowed, reasons: admission.reasons },
+        operationId
+      );
+      if (!admission.allowed) {
+        throw new Error(`本地安全准入拒绝：${admission.reasons.join("；")}`);
+      }
     }
     const downloadUrl = await resolveTorrentDownloadUrl(torrent, operationId);
     const result = await enqueueTorrentDirectToQb(torrent, downloadUrl, operationId);
@@ -1037,16 +1406,17 @@ const enqueueTorrent = async (torrent, { manualOverride = false } = {}) => {
       torrentId: torrent.torrentId || "",
       deadline: torrent.freeEndAt,
       progress: 0,
+      downloader: result.downloader,
       reason: manualOverride
-        ? `用户手动覆盖 risk 准入，分类 PT_AGENT，评分 ${result.evaluation.score}`
-        : `本地安全准入通过，分类 PT_AGENT，评分 ${result.evaluation.score}`,
+        ? `用户手动覆盖 risk 准入，下载器 ${result.downloader}，分类 ${result.category}，评分 ${result.evaluation.score}`
+        : `本地安全准入通过，下载器 ${result.downloader}，分类 ${result.category}，评分 ${result.evaluation.score}`,
       deleteFiles: false
     }, operationId).catch(() => {});
     state.qbPushStatus.set(key, "success");
     const okMessage = manualOverride
       ? `已按你的判断手动发送：${torrent.title}`
       : `已发送到 qBittorrent：${torrent.title}`;
-    setQbMessage(`${okMessage}；分类：PT_AGENT`, "success");
+    setQbMessage(`${okMessage}；下载器：${result.downloader}，分类：${result.category}`, "success");
     showToast(`✅ ${okMessage}`, "success");
     // 发送后验证：qB 可能回「Ok」却因保存目录无效/重复/被拒而不真正添加，此处兜底提示，避免假成功。
     setTimeout(async () => {
@@ -1096,10 +1466,14 @@ const pushRecommended = async () => {
   }
   $("downloadRecommendedBtn").disabled = true;
   let succeeded = 0;
-  for (const torrent of torrents) {
-    if (await enqueueTorrent(torrent)) succeeded += 1;
+  try {
+    // 逐个累计 batchQueued，让并发上限在一次批量里也真正生效（此前会一次性推送全部推荐）。
+    for (const torrent of torrents) {
+      if (await enqueueTorrent(torrent, { batchQueued: succeeded })) succeeded += 1;
+    }
+  } finally {
+    $("downloadRecommendedBtn").disabled = false;
   }
-  $("downloadRecommendedBtn").disabled = false;
   setQbMessage(
     `批量提交 ${torrents.length} 个：成功 ${succeeded}，拒绝或失败 ${torrents.length - succeeded}。`,
     succeeded ? "success" : "error"
@@ -1311,6 +1685,8 @@ const renderList = () => {
     const resourceStatus = qbResourceStatus(item);
     const admission = admissionFor(item);
     const policyBlocked = item.decision === "reject";
+    // 推荐资源若被本地准入拦截（并发已满、评分不足等），在按钮上直接说明，避免点下去才看到失败提示。
+    const admissionBlocked = item.decision === "recommend" && !admission.allowed;
     const qbLabel =
       qbPushStatus === "loading" ? "发送中…" :
       resourceStatus === "downloaded" ? "已下载" :
@@ -1318,6 +1694,7 @@ const renderList = () => {
       qbPushStatus === "success" ? "已发送" :
       qbPushStatus === "error" ? "重试下载" :
       policyBlocked ? "安全策略拦截" :
+      admissionBlocked ? "准入拦截" :
       "一键下载";
     const qbAction = `<button class="row-action qb-download-button ${resourceStatus || (qbPushStatus === "success" ? "sent" : "")}" type="button" data-row-index="${item.rowIndex}" title="${escapeHtml(admission.reasons.join("；"))}" ${qbPushStatus === "loading" || resourceStatus || policyBlocked ? "disabled" : ""}>${qbLabel}</button>`;
     return `
@@ -1405,7 +1782,7 @@ const runScan = async () => {
       state.scan = {
         page: {
           title: "M-Team 当前 Free",
-          url: globalThis.PT_AGENT_PRIVATE_CONFIG.mteamSiteUrl,
+          url: siteUrl(),
           scannedAt: new Date().toISOString()
         },
         site: {
@@ -1473,7 +1850,7 @@ const focusSourceTab = async () => {
   try {
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
     await chrome.tabs.create({
-      url: globalThis.PT_AGENT_PRIVATE_CONFIG.mteamSiteUrl,
+      url: siteUrl(),
       active: true,
       windowId: activeTab?.windowId
     });
@@ -1501,15 +1878,19 @@ const openFullscreenDashboard = async () => {
 };
 
 const switchView = (view) => {
-  state.activeView = ["downloads", "logs"].includes(view) ? view : "resources";
+  state.activeView = ["downloads", "settings", "logs"].includes(view) ? view : "resources";
   document.querySelectorAll("[data-view-panel]").forEach((panel) => {
     panel.classList.toggle("active", panel.dataset.viewPanel === state.activeView);
   });
   document.querySelectorAll("[data-view]").forEach((button) => {
     button.classList.toggle("active", button.dataset.view === state.activeView);
   });
-  if (state.activeView === "downloads" && state.qbSettings?.password) {
+  if (state.activeView === "downloads" && state.downloaders.some((item) => item.password)) {
     refreshQbTorrents({ silent: true });
+  }
+  if (state.activeView === "settings") {
+    renderDownloaderSettings();
+    renderSiteSettings();
   }
   if (state.activeView === "logs") {
     logPage = 0;
@@ -1586,25 +1967,23 @@ document.addEventListener("DOMContentLoaded", async () => {
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
     state.sourceTabId = activeTab?.id || null;
   }
-  [state.policySettings, state.qbSettings, state.excludedTorrents] = await Promise.all([
+  [state.policySettings, state.downloaders, state.sites, state.excludedTorrents] = await Promise.all([
     getSettings(),
-    getQbSettings(),
+    downloaderStore.list(),
+    siteStore.list(),
     exclusionStore.list()
   ]);
   fillGuardSettingsForm(state.policySettings);
-  fillQbSettingsForm(state.qbSettings);
+  await renderDownloaderSettings();
+  renderSiteSettings();
   await loadAuditEvents();
   renderExcludedTorrents();
   $("scanBtn").addEventListener("click", runScan);
   $("sourceBtn").addEventListener("click", focusSourceTab);
   $("fullscreenBtn").addEventListener("click", openFullscreenDashboard);
-  $("saveQbBtn").addEventListener("click", async () => {
-    try {
-      await saveQbSettings();
-    } catch (error) {
-      setQbMessage(error.message || String(error), "error");
-    }
-  });
+  $("addDownloaderBtn").addEventListener("click", addDownloader);
+  $("reprobeDownloadersBtn").addEventListener("click", reprobeDownloaders);
+  $("addSiteBtn").addEventListener("click", addSite);
   $("testQbBtn").addEventListener("click", testQbConnection);
   $("diagnoseQbBtn").addEventListener("click", diagnoseQbConnection);
   $("backfillDeadlineBtn").addEventListener("click", backfillMteamDeadlines);
@@ -1629,7 +2008,13 @@ document.addEventListener("DOMContentLoaded", async () => {
       renderList();
     });
   });
-  debug("boot:kickoff", { hasQbPassword: Boolean(state.qbSettings.password) });
+  const usableDownloaders = state.downloaders.filter((item) => item.enabled && item.password);
+  debug("boot:kickoff", {
+    downloaders: state.downloaders.length,
+    usableDownloaders: usableDownloaders.length,
+    sites: state.sites.length,
+    hasSiteApiKey: Boolean(activeSite()?.apiKey)
+  });
   runScan();
-  if (state.qbSettings.password) refreshQbTorrents({ silent: true });
+  if (usableDownloaders.length) refreshQbTorrents({ silent: true });
 });

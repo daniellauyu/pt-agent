@@ -53,6 +53,13 @@ test("returns a deadline only for a Free promotion", () => {
   }), "");
 });
 
+test("recognizes both the ISO and the legacy Free deadline tag", () => {
+  assert.equal(core.hasDeadlineTag("ptagent, ptagent-free-end=2026-07-24T23:32:27+08:00"), true);
+  assert.equal(core.hasDeadlineTag("ptagent, 2026-07-24 23:32:27"), true);
+  assert.equal(core.hasDeadlineTag("ptagent, ptagent-source=mteam:123"), false);
+  assert.equal(core.hasDeadlineTag(""), false);
+});
+
 test("searches adult mode first for coded adult releases", () => {
   assert.deepEqual(Array.from(core.searchModes("SONE-788.2026.1080p")), ["adult", "normal"]);
   assert.deepEqual(Array.from(core.searchModes("Click.2006.BluRay")), ["normal", "adult"]);

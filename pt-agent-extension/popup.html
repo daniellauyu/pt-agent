@@ -25,10 +25,22 @@
           <span class="nav-icon">↓</span>
           下载中
         </button>
+        <button id="settingsNav" class="nav-item" type="button" data-view="settings">
+          <span class="nav-icon">⚙</span>
+          设置
+        </button>
         <button id="logsNav" class="nav-item" type="button" data-view="logs">
           <span class="nav-icon">☰</span>
           日志
         </button>
+        <div class="nav-label">当前下载器</div>
+        <div class="sidebar-site">
+          <span class="site-dot"></span>
+          <div>
+            <strong id="sidebarDownloaderName">未选择</strong>
+            <span id="sidebarDownloaderMode">按可达性自动选路</span>
+          </div>
+        </div>
         <div class="nav-label">当前站点</div>
         <div class="sidebar-site">
           <span class="site-dot"></span>
@@ -65,6 +77,7 @@
         <div class="view-switcher" aria-label="页面菜单">
           <button class="view-switch active" type="button" data-view="resources">可下载资源</button>
           <button class="view-switch" type="button" data-view="downloads">下载中</button>
+          <button class="view-switch" type="button" data-view="settings">设置</button>
           <button class="view-switch" type="button" data-view="logs">日志</button>
         </div>
 
@@ -172,54 +185,10 @@
             </div>
           </div>
 
-          <div class="downloader-settings">
-            <label>
-              <span>qB 地址</span>
-              <input id="qbAddress" type="url" autocomplete="off">
-            </label>
-            <label>
-              <span>账号</span>
-              <input id="qbUsername" type="text" autocomplete="username">
-            </label>
-            <label>
-              <span>密码</span>
-              <input id="qbPassword" type="password" autocomplete="current-password" placeholder="首次使用请输入">
-            </label>
-            <label>
-              <span>下载目录（可选）</span>
-              <input id="qbSavePath" type="text" autocomplete="off" placeholder="使用 qB 默认目录">
-            </label>
-            <label class="api-key-field">
-              <span>M-Team API Key</span>
-              <input id="mteamApiKey" type="password" autocomplete="off" placeholder="页面只有下载按钮时必填">
-            </label>
-            <button id="saveQbBtn" class="btn btn-primary" type="button">保存设置</button>
-          </div>
           <div id="qbMessage" class="downloader-message">
-            密码和 API Key 仅保存在当前 Chrome 扩展的本地存储中，不会包含在导出的 JSON 里。
+            下载器和站点已移到左侧「设置」菜单，可配置多台并按网络自动切换。
           </div>
           <div id="qbDiagnostic" class="qb-diagnostic" hidden></div>
-
-          <div class="guard-settings">
-            <div>
-              <strong>Free Guard</strong>
-              <span>插件后台每分钟检查一次；到期前保护未完成任务。</span>
-            </div>
-            <label>
-              <input id="guardMonitorEnabled" type="checkbox">
-              <span>后台监控</span>
-            </label>
-            <label>
-              <span>保护窗口</span>
-              <input id="guardMinutes" type="number" min="1" max="120" step="1">
-              <span>分钟</span>
-            </label>
-            <label class="danger-switch">
-              <input id="autoDeleteExpired" type="checkbox">
-              <span>到期前自动删除未完成任务和文件</span>
-            </label>
-            <button id="saveGuardBtn" class="btn btn-quiet" type="button">保存保护设置</button>
-          </div>
 
           <div class="qb-table-header" aria-hidden="true">
             <span>任务</span>
@@ -254,6 +223,79 @@
           <div id="auditList" class="audit-list">
             <div class="empty compact-empty">暂无下载和保护动作记录。</div>
           </div>
+        </section>
+        </div>
+
+        <div id="settingsView" class="workspace-view" data-view-panel="settings">
+        <section id="downloaderSettingsPanel" class="panel settings-panel">
+          <div class="resource-head">
+            <div>
+              <div class="panel-kicker">DOWNLOADERS</div>
+              <h2>下载器</h2>
+            </div>
+            <div class="export-actions">
+              <span id="activeDownloaderBadge" class="site-status bad">未选择</span>
+              <button id="reprobeDownloadersBtn" class="btn btn-quiet" type="button">重新探测</button>
+              <button id="addDownloaderBtn" class="btn btn-primary" type="button">新增下载器</button>
+            </div>
+          </div>
+          <p class="settings-hint">
+            Chrome 扩展读不到 WiFi 名称，因此改为<strong>按可达性自动选路</strong>：从上往下依次探测，用第一台连得通的。
+            把内网地址排在外网地址前面，换网络时会自动落到能连上的那台。同一台 qB 的内外网地址请各建一条。
+          </p>
+          <div id="downloaderList" class="settings-list">
+            <div class="empty compact-empty">尚未配置下载器，点右上角「新增下载器」。</div>
+          </div>
+          <div id="probeResult" class="downloader-message"></div>
+        </section>
+
+        <section id="siteSettingsPanel" class="panel settings-panel">
+          <div class="resource-head">
+            <div>
+              <div class="panel-kicker">SITES</div>
+              <h2>站点</h2>
+            </div>
+            <div class="export-actions">
+              <button id="addSiteBtn" class="btn btn-primary" type="button">新增站点</button>
+            </div>
+          </div>
+          <p class="settings-hint">
+            站点地址和 API Key 已从下载器设置中拆出来，单独保存在这里。目前资源聚合只实现了 M-Team 的 API 模式。
+          </p>
+          <div id="siteList" class="settings-list">
+            <div class="empty compact-empty">尚未配置站点。</div>
+          </div>
+          <div id="siteMessage" class="downloader-message"></div>
+        </section>
+
+        <section id="guardSettingsPanel" class="panel settings-panel">
+          <div class="resource-head">
+            <div>
+              <div class="panel-kicker">FREE GUARD</div>
+              <h2>Free 到期保护</h2>
+            </div>
+          </div>
+          <div class="guard-settings">
+            <div>
+              <strong>Free Guard</strong>
+              <span>插件后台每分钟检查一次；到期前保护未完成任务。</span>
+            </div>
+            <label>
+              <input id="guardMonitorEnabled" type="checkbox">
+              <span>后台监控</span>
+            </label>
+            <label>
+              <span>保护窗口</span>
+              <input id="guardMinutes" type="number" min="1" max="120" step="1">
+              <span>分钟</span>
+            </label>
+            <label class="danger-switch">
+              <input id="autoDeleteExpired" type="checkbox">
+              <span>到期前自动删除未完成任务和文件</span>
+            </label>
+            <button id="saveGuardBtn" class="btn btn-quiet" type="button">保存保护设置</button>
+          </div>
+          <div id="guardMessage" class="downloader-message"></div>
         </section>
         </div>
 
@@ -296,6 +338,11 @@
   <script src="guard-engine.js"></script>
   <script src="mteam-backfill.js"></script>
   <script src="qb-client.js"></script>
+  <script src="downloader-registry.js"></script>
+  <script src="downloader-store.js"></script>
+  <script src="site-store.js"></script>
+  <script src="network-router.js"></script>
+  <script src="host-permissions.js"></script>
   <script src="exclusion-store.js"></script>
   <script src="popup.js"></script>
 </body>

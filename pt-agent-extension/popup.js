@@ -173,6 +173,7 @@ const exportLogs = () => {
 
 // 全局浮层提示：不依赖当前视图，成功/失败都能看到（此前错误只写在「下载中」页，资源页点下载看不到）。
 const showToast = (message, type = "info", ms = type === "error" ? 12000 : 4000) => {
+  if (type === "error") reportUiError("toast", message);
   let toast = document.getElementById("ptToast");
   if (!toast) {
     toast = document.createElement("div");
@@ -288,6 +289,7 @@ const fillPolicySettingsForm = (settings) => {
 };
 
 const setPolicyMessage = (message, type = "") => {
+  if (type === "error") reportUiError("policy", message);
   const node = $("policyMessage");
   if (!node) return;
   node.textContent = message;
@@ -296,7 +298,7 @@ const setPolicyMessage = (message, type = "") => {
 
 const readPolicySettingsForm = () => ({
   // 这里只做输入合法性兜底（避免 0 并发、负体积），不是策略上限。
-  maxActiveDownloads: clampNumber($("policyMaxActiveDownloads").value, { min: 1, max: 50, fallback: 3 }),
+  maxActiveDownloads: clampNumber($("policyMaxActiveDownloads").value, { min: 1, max: 200, fallback: 3 }),
   minimumScore: clampNumber($("policyMinimumScore").value, { min: 0, max: 100, fallback: 80 }),
   maxTorrentSizeGB: clampNumber($("policyMaxTorrentSizeGB").value, { min: 1, max: 4096, fallback: 50 }),
   minFreeHoursForAutoDownload: clampNumber($("policyMinFreeHours").value, { min: 0, max: 720, fallback: 12 }),
@@ -313,7 +315,7 @@ const savePolicySettings = async () => {
   // rejectHr / Free 剩余等条件属于决策引擎，改完要重新评估已扫描的资源才能生效。
   reevaluateScannedTorrents();
   setPolicyMessage(
-    `已保存：并发 ${next.maxActiveDownloads}、最低评分 ${next.minimumScore}、体积上限 ${next.maxTorrentSizeGB}GB、` +
+    `已保存：并发提醒 ${next.maxActiveDownloads}、最低评分 ${next.minimumScore}、体积上限 ${next.maxTorrentSizeGB}GB、` +
     `Free 最短剩余 ${next.minFreeHoursForAutoDownload} 小时、最低分享率 ${next.minimumRatio}。`,
     "success"
   );
@@ -439,7 +441,24 @@ const requireActiveDownloader = async (operationId) => {
   return downloader;
 };
 
+// 保证「用户看到的每一条错误提示，日志里一定有」。
+// 逐个调用点补 debug() 迟早会漏，所以把记录放进提示函数本身。
+// 同一条错误常常同时出现在消息条和浮层里，做一个短窗口去重。
+const recentlyReported = new Map();
+const reportUiError = (source, message) => {
+  const text = String(message || "").trim();
+  if (!text) return;
+  const now = Date.now();
+  for (const [key, at] of recentlyReported) {
+    if (now - at > 5000) recentlyReported.delete(key);
+  }
+  if (now - (recentlyReported.get(text) || 0) < 1500) return;
+  recentlyReported.set(text, now);
+  debug("ui:error", { source, message: text });
+};
+
 const setQbMessage = (message, type = "") => {
+  if (type === "error") reportUiError("downloader", message);
   $("qbMessage").textContent = message;
   $("qbMessage").className = `downloader-message ${type}`.trim();
 };
@@ -753,11 +772,14 @@ const isActiveDownload = (torrent) => {
   return Number(torrent.progress || 0) < 1 && /DL$|downloading|metaDL|allocating/i.test(String(torrent.state || ""));
 };
 
+// 只统计真正占用下载槽的任务；暂停和排队的不计入并发上限。
+const downloadSlots = () => globalThis.PT_AGENT_QB.summarizeDownloadSlots(state.qbTorrents);
+
 const admissionFor = (torrent, batchQueued = 0, activeDownloadsOverride = null) => {
   return globalThis.PT_AGENT_ADMISSION.evaluate({
     torrent,
     account: state.scan?.account || {},
-    activeDownloads: activeDownloadsOverride ?? state.qbTorrents.filter(isActiveDownload).length,
+    activeDownloads: activeDownloadsOverride ?? downloadSlots().occupying,
     batchQueued,
     settings: state.policySettings || defaultSettings
   });
@@ -896,6 +918,7 @@ const renderDownloaderSettings = async () => {
 };
 
 const setProbeMessage = (message, type = "") => {
+  if (type === "error") reportUiError("downloader-settings", message);
   const node = $("probeResult");
   if (!node) return;
   node.textContent = message;
@@ -1017,6 +1040,7 @@ const siteTypeOptions = (selected) => {
 };
 
 const setSiteMessage = (message, type = "") => {
+  if (type === "error") reportUiError("site-settings", message);
   const node = $("siteMessage");
   if (!node) return;
   node.textContent = message;
@@ -1558,9 +1582,18 @@ const enqueueTorrent = async (torrent, { manualOverride = false, batchQueued = 0
       const admission = admissionFor(torrent, batchQueued);
       debug(
         "qb:admission",
-        { title: torrent.title, allowed: admission.allowed, reasons: admission.reasons },
+        {
+          title: torrent.title,
+          allowed: admission.allowed,
+          reasons: admission.reasons,
+          warnings: admission.warnings
+        },
         operationId
       );
+      // 并发只提示不拦截：下载器会自行排队。
+      if (admission.warnings?.length) {
+        showToast(`⏳ ${admission.warnings.join("；")}`, "info");
+      }
       if (!admission.allowed) {
         throw new Error(`本地安全准入拒绝：${admission.reasons.join("；")}`);
       }
@@ -1847,6 +1880,7 @@ const renderList = () => {
     const policyBlocked = item.decision === "reject";
     // 推荐资源若被本地准入拦截（并发已满、评分不足等），在按钮上直接说明，避免点下去才看到失败提示。
     const admissionBlocked = item.decision === "recommend" && !admission.allowed;
+    const admissionHint = [...admission.reasons, ...(admission.warnings || [])].join("；");
     const qbLabel =
       qbPushStatus === "loading" ? "发送中…" :
       resourceStatus === "downloaded" ? "已下载" :
@@ -1856,7 +1890,7 @@ const renderList = () => {
       policyBlocked ? "安全策略拦截" :
       admissionBlocked ? "准入拦截" :
       "一键下载";
-    const qbAction = `<button class="row-action qb-download-button ${resourceStatus || (qbPushStatus === "success" ? "sent" : "")}" type="button" data-row-index="${item.rowIndex}" title="${escapeHtml(admission.reasons.join("；"))}" ${qbPushStatus === "loading" || resourceStatus || policyBlocked ? "disabled" : ""}>${qbLabel}</button>`;
+    const qbAction = `<button class="row-action qb-download-button ${resourceStatus || (qbPushStatus === "success" ? "sent" : "")}" type="button" data-row-index="${item.rowIndex}" title="${escapeHtml(admissionHint)}" ${qbPushStatus === "loading" || resourceStatus || policyBlocked ? "disabled" : ""}>${qbLabel}</button>`;
     return `
       <article class="card">
         <div class="resource-main">
@@ -2126,6 +2160,9 @@ const initTheme = async () => {
 document.addEventListener("DOMContentLoaded", async () => {
   const params = new URLSearchParams(location.search);
   const isDashboard = params.get("mode") === "dashboard";
+  // 未捕获异常走 debug()，这样能立刻出现在日志页而不必等下次加载。
+  globalThis.PT_AGENT_LOGGER.installErrorCapture(globalThis, (event, data) => debug(event, data));
+  globalThis.PT_AGENT_LOGGER.installConsoleCapture(globalThis, (event, data) => debug(event, data));
   debug("boot", { mode: isDashboard ? "dashboard" : "popup", url: location.href });
   await loadDebugLog();
   await initTheme();

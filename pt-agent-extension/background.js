@@ -12,6 +12,8 @@ importScripts(
 );
 
 globalThis.PT_AGENT_LOGGER.installStorageOwner();
+globalThis.PT_AGENT_LOGGER.installErrorCapture();
+globalThis.PT_AGENT_LOGGER.installConsoleCapture();
 
 // 旧版的单下载器 / 站点配置在这里一次性迁移到多下载器、多站点结构。
 const migrateStores = async () => {

@@ -15,6 +15,9 @@ globalThis.PT_AGENT_ADMISSION = (() => {
       ...settings
     };
     const reasons = [];
+    // 并发不再是拦截条件：下载器自己有队列，超出上限的任务会排队而不是丢失。
+    // 但仍然提示出来，因为 Free 资源有截止时间，排太久可能在 Free 窗口内轮不到。
+    const warnings = [];
     const sizeGB = Number(torrent?.sizeBytes || 0) / 1024 ** 3;
     const score = Number(torrent?.score || 0);
     const ratio = Number(account?.ratio);
@@ -31,16 +34,21 @@ globalThis.PT_AGENT_ADMISSION = (() => {
       reasons.push(`Free 剩余不足 ${config.minFreeHoursForAutoDownload} 小时`);
     }
     if (activeDownloads + batchQueued >= config.maxActiveDownloads) {
-      reasons.push(`活动下载已达到 ${config.maxActiveDownloads} 个`);
+      warnings.push(
+        `已有 ${activeDownloads + batchQueued} 个下载占用中，超过提醒阈值 ${config.maxActiveDownloads}；` +
+        `新任务会在下载器里排队，注意 Free 是否来得及`
+      );
     }
     if (Number.isFinite(ratio) && ratio > 0 && ratio < config.minimumRatio) {
       reasons.push(`分享率低于 ${config.minimumRatio.toFixed(1)}`);
     }
 
+    const allowed = reasons.length === 0;
     return {
-      allowed: reasons.length === 0,
+      allowed,
       reasons,
-      activeAfterEnqueue: activeDownloads + batchQueued + (reasons.length === 0 ? 1 : 0)
+      warnings,
+      activeAfterEnqueue: activeDownloads + batchQueued + (allowed ? 1 : 0)
     };
   };
 

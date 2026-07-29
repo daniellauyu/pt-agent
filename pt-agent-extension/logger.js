@@ -155,12 +155,46 @@ globalThis.PT_AGENT_LOGGER = (() => {
     return next;
   };
 
+  // 存储操作的唯一实现，background 的串行队列和本地兜底都复用它。
+  const handleStorageOp = async (type, payload = {}) => {
+    if (type === "pt-agent:log:append") return { ok: true, items: await persistLog(payload.entry) };
+    if (type === "pt-agent:log:list") return { ok: true, items: trimLogs(await storageGet(LOG_KEY)) };
+    if (type === "pt-agent:log:clear") {
+      await storageSet(LOG_KEY, []);
+      return { ok: true };
+    }
+    if (type === "pt-agent:audit:append") return { ok: true, items: await persistAudit(payload.event) };
+    if (type === "pt-agent:audit:list") {
+      return { ok: true, items: (await storageGet(AUDIT_KEY)).map(createAuditEvent) };
+    }
+    return null;
+  };
+
   const dispatch = async (type, payload = {}) => {
     if (ownerWrite) return ownerWrite(type, payload);
     try {
-      return await chrome.runtime.sendMessage({ type, ...payload });
+      const response = await chrome.runtime.sendMessage({ type, ...payload });
+      if (response) return response;
+    } catch (_) {}
+    // Service Worker 休眠或重启时 sendMessage 会失败。此前直接返回 null，
+    // 日志就这么静默丢了；改为自己落本地，保证错误记录不会消失。
+    try {
+      return await handleStorageOp(type, payload);
     } catch (_) {
       return null;
+    }
+  };
+
+  // Chrome 的扩展「错误」页只把第二个参数 stringify 成 [object Object]，
+  // 详情必须拼进消息字符串里，否则截图过来完全看不出原因。
+  const consoleSummary = (data) => {
+    if (data === null || data === undefined) return "";
+    try {
+      const text = typeof data === "string" ? data : JSON.stringify(data);
+      if (!text || text === "{}") return "";
+      return text.length > 500 ? `${text.slice(0, 500)}…` : text;
+    } catch (_) {
+      return "[unserializable]";
     }
   };
 
@@ -168,7 +202,8 @@ globalThis.PT_AGENT_LOGGER = (() => {
     const normalized = normalizeEntry(entry);
     try {
       const method = normalized.level === "error" ? "error" : normalized.level === "warn" ? "warn" : "log";
-      console[method](`[PT] ${normalized.event}`, normalized.data ?? "");
+      const summary = consoleSummary(normalized.data);
+      console[method](`[PT] ${normalized.event}${summary ? ` ${summary}` : ""}`);
     } catch (_) {}
     void dispatch("pt-agent:log:append", { entry: normalized });
     return normalized;
@@ -217,27 +252,8 @@ globalThis.PT_AGENT_LOGGER = (() => {
 
   const installStorageOwner = () => {
     let queue = Promise.resolve();
-    const handle = async (type, payload) => {
-      if (type === "pt-agent:log:append") {
-        return { ok: true, items: await persistLog(payload.entry) };
-      }
-      if (type === "pt-agent:log:list") {
-        return { ok: true, items: trimLogs(await storageGet(LOG_KEY)) };
-      }
-      if (type === "pt-agent:log:clear") {
-        await storageSet(LOG_KEY, []);
-        return { ok: true };
-      }
-      if (type === "pt-agent:audit:append") {
-        return { ok: true, items: await persistAudit(payload.event) };
-      }
-      if (type === "pt-agent:audit:list") {
-        return { ok: true, items: (await storageGet(AUDIT_KEY)).map(createAuditEvent) };
-      }
-      return null;
-    };
     ownerWrite = (type, payload) => {
-      queue = queue.then(() => handle(type, payload));
+      queue = queue.then(() => handleStorageOp(type, payload));
       return queue;
     };
     chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
@@ -249,9 +265,86 @@ globalThis.PT_AGENT_LOGGER = (() => {
     });
   };
 
+  // 未捕获异常和未处理的 Promise 拒绝此前只出现在 Chrome 的扩展「错误」页，
+  // 从来没进过插件日志——排查时看到的和记录下来的是两批东西。
+  let errorCaptureInstalled = false;
+  const installErrorCapture = (scope = globalThis, sink = null) => {
+    if (errorCaptureInstalled || !scope?.addEventListener) return false;
+    errorCaptureInstalled = true;
+    // 记录日志本身若再抛错会形成环，这里用标志位挡住重入。
+    let inside = false;
+    const record = (event, data) => {
+      if (inside) return;
+      inside = true;
+      try {
+        if (sink) sink(event, data);
+        else write(createEntry({ level: "error", event, data }));
+      } catch (_) {
+      } finally {
+        inside = false;
+      }
+    };
+    const shortStack = (stack) => String(stack || "").split("\n").slice(0, 6).join("\n");
+
+    scope.addEventListener("error", (event) => {
+      record("runtime.uncaught-error", {
+        message: String(event?.message || event?.error?.message || "未捕获异常"),
+        source: event?.filename ? `${event.filename}:${event.lineno}:${event.colno}` : undefined,
+        stack: shortStack(event?.error?.stack)
+      });
+    });
+    scope.addEventListener("unhandledrejection", (event) => {
+      const reason = event?.reason;
+      record("runtime.unhandled-rejection", {
+        message: String(reason?.message || reason || "未处理的 Promise 拒绝"),
+        stack: shortStack(reason?.stack)
+      });
+    });
+    return true;
+  };
+
+  // 兜底网：任何绕过 logger 直接 console.error/warn 的代码（包括将来引入的第三方）
+  // 也会进日志。带 [PT] 前缀的是 logger 自己打的，跳过以免递归。
+  let consoleCaptureInstalled = false;
+  const installConsoleCapture = (scope = globalThis, sink = null) => {
+    const target = scope?.console;
+    if (consoleCaptureInstalled || !target) return false;
+    consoleCaptureInstalled = true;
+    let inside = false;
+    for (const level of ["error", "warn"]) {
+      const original = typeof target[level] === "function" ? target[level].bind(target) : null;
+      if (!original) continue;
+      target[level] = (...args) => {
+        original(...args);
+        if (inside) return;
+        const text = args
+          .map((arg) => {
+            if (typeof arg === "string") return arg;
+            try { return JSON.stringify(arg); } catch (_) { return String(arg); }
+          })
+          .join(" ")
+          .trim();
+        if (!text || text.startsWith("[PT] ")) return;
+        inside = true;
+        try {
+          const event = level === "error" ? "runtime.console-error" : "runtime.console-warn";
+          const data = { message: text.slice(0, 500) };
+          if (sink) sink(event, data);
+          else write(createEntry({ level, event, data }));
+        } catch (_) {
+        } finally {
+          inside = false;
+        }
+      };
+    }
+    return true;
+  };
+
   return {
     LOG_KEY,
     AUDIT_KEY,
+    installConsoleCapture,
+    installErrorCapture,
     redact,
     redactUrl,
     createEntry,

@@ -359,6 +359,27 @@ globalThis.PT_AGENT_QB = (() => {
     return { torrent: byName, matchedBy: byName ? "name" : "none" };
   };
 
+  // 「显示在下载中列表」和「占用一个下载槽」是两回事：
+  // 暂停(pausedDL/stoppedDL)和排队(queuedDL)的任务要显示出来，但不该占用并发额度——
+  // 否则一堆暂停任务就能把并发上限占满，新资源永远发不出去。
+  const OCCUPYING_STATE = /^(downloading|forced(Meta)?DL|metaDL|allocating|checkingDL|stalledDL)$/i;
+  const HELD_STATE = /^(paused|stopped|queued)DL$/i;
+
+  const summarizeDownloadSlots = (torrents) => {
+    const byState = {};
+    let occupying = 0;
+    let held = 0;
+    for (const torrent of torrents || []) {
+      if (Number(torrent?.progress || 0) >= 1) continue;
+      const state = String(torrent?.state || "");
+      if (!/DL$|downloading|allocating/i.test(state)) continue;
+      byState[state] = (byState[state] || 0) + 1;
+      if (HELD_STATE.test(state)) held += 1;
+      else if (OCCUPYING_STATE.test(state)) occupying += 1;
+    }
+    return { occupying, held, byState };
+  };
+
   const summarizeMteamSeeding = (torrents) => {
     const completed = (torrents || []).filter((torrent) => {
       let trackerHost = "";
@@ -395,6 +416,7 @@ globalThis.PT_AGENT_QB = (() => {
     normalizeTorrentName,
     sourceFromTags,
     sourceTag,
+    summarizeDownloadSlots,
     summarizeMteamSeeding,
     torrentTags
   };

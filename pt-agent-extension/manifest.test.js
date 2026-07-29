@@ -39,8 +39,18 @@ test("keeps the toolbar popup as the compact mode", () => {
   assert.equal(manifest.action.default_popup, "popup.html");
 });
 
-test("publishes the duplicate-add fix as version 0.17.2", () => {
-  assert.equal(manifest.version, "0.17.2");
+test("publishes the complete error-capture update as version 0.19.0", () => {
+  assert.equal(manifest.version, "0.19.0");
+});
+
+test("captures uncaught errors in both the popup and the service worker", () => {
+  const background = fs.readFileSync(path.join(__dirname, "background.js"), "utf8");
+  const popup = fs.readFileSync(path.join(__dirname, "popup.js"), "utf8");
+  // 未捕获异常此前只出现在 Chrome 的错误页，插件日志里完全没有
+  assert.match(background, /PT_AGENT_LOGGER\.installErrorCapture\(\)/);
+  assert.match(background, /PT_AGENT_LOGGER\.installConsoleCapture\(\)/);
+  assert.match(popup, /PT_AGENT_LOGGER\.installErrorCapture\(globalThis/);
+  assert.match(popup, /PT_AGENT_LOGGER\.installConsoleCapture\(globalThis/);
 });
 
 test("covers the M-Team download CDN so the .torrent bytes can be fetched", () => {

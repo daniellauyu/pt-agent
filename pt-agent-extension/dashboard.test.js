@@ -282,6 +282,24 @@ test("degrades to the URL route with a clear reason when the CDN blocks the fetc
   assert.match(fetchFile, /return null;/);
 });
 
+test("counts concurrency by occupied download slots, not by paused or queued tasks", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  // isActiveDownload 用 /DL$/i 匹配，会把 pausedDL / queuedDL 也算进并发，
+  // 那样一堆暂停任务就能把额度占满。准入必须用只统计占槽任务的口径。
+  assert.match(script, /const downloadSlots = \(\) => globalThis\.PT_AGENT_QB\.summarizeDownloadSlots/);
+  assert.match(script, /activeDownloads: activeDownloadsOverride \?\? downloadSlots\(\)\.occupying/);
+});
+
+test("warns about concurrency without ever blocking the enqueue", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  const engine = fs.readFileSync(path.join(extensionDir, "admission-engine.js"), "utf8");
+  // 下载器自己有队列，超出并发的任务会排队而不是丢失，所以并发只提示不拦截
+  assert.match(engine, /warnings\.push\(/);
+  assert.doesNotMatch(engine, /reasons\.push\(\s*`活动下载已达到/);
+  assert.match(script, /if \(admission\.warnings\?\.length\)/);
+  assert.match(script, /showToast\(`⏳ \$\{admission\.warnings\.join\("；"\)\}`/);
+});
+
 test("enforces local admission before enqueueing and caps a batch push", () => {
   const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
   const enqueue = script.match(/const enqueueTorrent = async[\s\S]*?\n};/)?.[0] || "";
@@ -290,6 +308,19 @@ test("enforces local admission before enqueueing and caps a batch push", () => {
   assert.match(enqueue, /本地安全准入拒绝/);
   const push = script.match(/const pushRecommended = async[\s\S]*?\n};/)?.[0] || "";
   assert.match(push, /enqueueTorrent\(torrent, \{ batchQueued: succeeded \}\)/);
+});
+
+test("routes every user-visible error into the log", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  // 逐个调用点补 debug() 迟早会漏，记录必须放在提示函数本身
+  assert.match(script, /const reportUiError =/);
+  ["setQbMessage", "setProbeMessage", "setSiteMessage", "setPolicyMessage", "showToast"].forEach((fn) => {
+    const body = script.match(new RegExp(`const ${fn} = \\(([\\s\\S]*?)\\n};`))?.[0] || "";
+    assert.match(body, /if \(type === "error"\) reportUiError\(/, `${fn} 必须把错误写进日志`);
+  });
+  // 同一条错误常常同时出现在消息条和浮层，要去重
+  assert.match(script, /recentlyReported/);
+  assert.match(script, /PT_AGENT_LOGGER\.installConsoleCapture/);
 });
 
 test("ships a persistent debug log page", () => {

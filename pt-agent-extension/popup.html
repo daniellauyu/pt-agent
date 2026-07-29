@@ -280,14 +280,15 @@
             </div>
           </div>
           <p class="settings-hint">
-            这些是<strong>本地安全准入</strong>的判定条件：点「一键下载」时逐条检查，任意一条不满足就拦下并在按钮上显示「准入拦截」。
+            这些是<strong>本地安全准入</strong>的判定条件：点「一键下载」时逐条检查，不满足就拦下并在按钮上显示「准入拦截」。
+            并发数只提示不拦截——下载器自己有队列，超出的任务会排队而不是丢失。
             鼠标悬停在被拦的按钮上可以看到具体原因。修改后立即重新评估当前列表，无需重新扫描。
           </p>
           <div class="settings-grid policy-grid">
             <label>
-              <span>最大同时下载数</span>
-              <input id="policyMaxActiveDownloads" type="number" min="1" max="50" step="1">
-              <small>qB 中正在下载的任务达到这个数就不再入队</small>
+              <span>并发提醒阈值</span>
+              <input id="policyMaxActiveDownloads" type="number" min="1" max="200" step="1">
+              <small>仅提示不拦截：超过后仍会发送，任务在下载器里排队</small>
             </label>
             <label>
               <span>最低评分</span>

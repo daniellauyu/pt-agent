@@ -555,3 +555,30 @@ test("does not swallow a non-409 failure from torrents/add", async () => {
   );
   await assert.rejects(() => client.addTorrent({ url: "https://tracker/1" }), /HTTP 500/);
 });
+
+test("counts only torrents that actually occupy a download slot", () => {
+  const qb = loadClient();
+  const slots = qb.summarizeDownloadSlots([
+    { state: "downloading", progress: 0.2 },
+    { state: "forcedDL", progress: 0.4 },
+    { state: "metaDL", progress: 0 },
+    { state: "stalledDL", progress: 0.1 },
+    // 暂停和排队的不占槽：一堆暂停任务不该把并发额度占满
+    { state: "pausedDL", progress: 0.5 },
+    { state: "stoppedDL", progress: 0.3 },
+    { state: "queuedDL", progress: 0 },
+    // 做种和已完成的与下载并发无关
+    { state: "uploading", progress: 1 },
+    { state: "stalledUP", progress: 1 }
+  ]);
+  assert.equal(slots.occupying, 4);
+  assert.equal(slots.held, 3);
+  assert.equal(slots.byState.pausedDL, 1);
+  assert.equal(slots.byState.uploading, undefined, "做种任务不进入下载统计");
+});
+
+test("reports no occupied slots for an empty or seeding-only downloader", () => {
+  const qb = loadClient();
+  assert.equal(qb.summarizeDownloadSlots([]).occupying, 0);
+  assert.equal(qb.summarizeDownloadSlots([{ state: "uploading", progress: 1 }]).occupying, 0);
+});

@@ -26,9 +26,10 @@ test("admits a safe recommendation below the concurrency limit", () => {
   });
   assert.equal(result.allowed, true);
   assert.equal(result.activeAfterEnqueue, 3);
+  assert.deepEqual(Array.from(result.warnings), []);
 });
 
-test("applies the same score, size, time, ratio, and concurrency gate", () => {
+test("applies the same score, size, time, and ratio gate", () => {
   const result = loadEngine().evaluate({
     torrent: {
       ...safeTorrent,
@@ -40,12 +41,27 @@ test("applies the same score, size, time, ratio, and concurrency gate", () => {
     activeDownloads: 3
   });
   assert.equal(result.allowed, false);
-  assert.equal(result.reasons.length, 5);
+  assert.equal(result.reasons.length, 4);
   assert.match(result.reasons.join("；"), /评分低于 80/);
   assert.match(result.reasons.join("；"), /体积超过 50GB/);
   assert.match(result.reasons.join("；"), /Free 剩余不足 12 小时/);
-  assert.match(result.reasons.join("；"), /活动下载已达到 3 个/);
   assert.match(result.reasons.join("；"), /分享率低于 1\.0/);
+  // 并发不再拦截，只作为提示
+  assert.doesNotMatch(result.reasons.join("；"), /活动下载/);
+  assert.match(result.warnings.join("；"), /排队/);
+});
+
+test("never blocks on concurrency because the downloader queues extra tasks", () => {
+  const result = loadEngine().evaluate({
+    torrent: safeTorrent,
+    account: { ratio: 2.5 },
+    activeDownloads: 99,
+    batchQueued: 5
+  });
+  assert.equal(result.allowed, true, "并发再高也不该拦截，下载器会排队");
+  assert.deepEqual(Array.from(result.reasons), []);
+  assert.match(result.warnings.join("；"), /超过提醒阈值/);
+  assert.match(result.warnings.join("；"), /Free 是否来得及/);
 });
 
 test("does not admit a risk item even if all numeric limits pass", () => {

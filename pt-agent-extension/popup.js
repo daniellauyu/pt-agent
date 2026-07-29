@@ -23,6 +23,11 @@ const exclusionStore = globalThis.PT_AGENT_EXCLUSIONS.createStore();
 const downloaderStore = globalThis.PT_AGENT_DOWNLOADER_STORE.createStore();
 const siteStore = globalThis.PT_AGENT_SITE_STORE.createStore();
 const hostPermissions = globalThis.PT_AGENT_HOST_PERMISSIONS.createManager();
+const requestRules = globalThis.PT_AGENT_REQUEST_RULES.createManager({
+  onLog: (event, data) => debug(event, data)
+});
+// 剥掉 Origin/Referer 后再发，绕过 qB 的跨站判定（403）而不必关闭它的 CSRF 保护。
+const downloaderFetch = requestRules.wrapFetch(globalThis.fetch.bind(globalThis));
 
 const isTorrentExcluded = (torrent) => {
   return exclusionStore.isExcluded(torrent, state.excludedTorrents);
@@ -394,7 +399,7 @@ const probeDownloader = async (downloader, operationId) => {
   }
   const adapter = globalThis.PT_AGENT_DOWNLOADER_TYPES.createAdapter(
     downloader,
-    { onLog: (event, data) => debug(event, data, operationId) }
+    { fetchImpl: downloaderFetch, onLog: (event, data) => debug(event, data, operationId) }
   );
   return adapter.probe({ timeoutMs: globalThis.PT_AGENT_NETWORK_ROUTER.DEFAULT_TIMEOUT_MS });
 };
@@ -448,6 +453,7 @@ const createDownloaderClient = async (
 ) => {
   const downloader = await requireActiveDownloader(operationId);
   return globalThis.PT_AGENT_DOWNLOADER_TYPES.createAdapter(downloader, {
+    fetchImpl: downloaderFetch,
     onLog: (event, data) => debug(event, data, operationId)
   });
 };
@@ -659,7 +665,7 @@ const backfillMteamDeadlines = async () => {
   try {
     if (!activeSite()?.apiKey) throw new Error("缺少站点 API Key，请到「设置 → 站点」填写");
     const client = await createDownloaderClient(operationId);
-    await client.login();
+    // 不再预先登录：请求层会在真的缺少会话时登录一次并重试，避免每个操作都打一次登录。
     const allTorrents = await client.listTorrents("all");
     const candidates = allTorrents.filter((torrent) => {
       let trackerHost = "";
@@ -723,7 +729,7 @@ const resolveTorrentDownloadUrl = async (torrent, operationId) => {
 };
 
 const findQbTorrent = (torrent) => {
-  return globalThis.PT_AGENT_QB.findMatchingTorrent(torrent.title, state.qbTorrents);
+  return globalThis.PT_AGENT_QB.matchTorrent(torrent, state.qbTorrents).torrent;
 };
 
 const isActiveDownload = (torrent) => {
@@ -927,6 +933,7 @@ const testDownloaderCard = async (value) => {
       await hostPermissions.ensure(record.address);
     }
     const adapter = globalThis.PT_AGENT_DOWNLOADER_TYPES.createAdapter(record, {
+      fetchImpl: downloaderFetch,
       onLog: (event, data) => debug(event, data, operationId)
     });
     await adapter.login();
@@ -1208,7 +1215,7 @@ const excludeAndDeleteTorrent = async (torrent) => {
   }, operationId).catch(() => {});
   try {
     const client = await createDownloaderClient(operationId);
-    await client.login();
+    // 不再预先登录：请求层会在真的缺少会话时登录一次并重试，避免每个操作都打一次登录。
     await client.deleteTorrents(torrent.hash, true);
     state.qbTorrents = state.qbTorrents.filter((item) => item.hash !== torrent.hash);
     renderQbTorrents();
@@ -1245,7 +1252,7 @@ const refreshQbTorrents = async ({
 } = {}) => {
   try {
     const client = await createDownloaderClient(operationId);
-    await client.login();
+    // 不再预先登录：请求层会在真的缺少会话时登录一次并重试，避免每个操作都打一次登录。
     state.qbTorrents = await client.listTorrents("all");
     state.qbSeedingSummary = globalThis.PT_AGENT_QB.summarizeMteamSeeding(state.qbTorrents);
     const downloadingCount = state.qbTorrents.filter(isActiveDownload).length;
@@ -1304,12 +1311,24 @@ const renderQbDiagnostic = (result, address) => {
       <span>${escapeHtml(stage.detail)}</span>
     </div>
   `).join("");
+  const failedDetail = (result?.stages || []).find((stage) => stage.status === "error")?.detail || "";
+  const is403 = /\b403\b/.test(failedDetail);
+  // 403 且浏览器能正常登录，几乎都是跨站请求被拦：插件的 Origin 是 chrome-extension://
+  const forbiddenHint = "返回 403：浏览器直接访问是同站请求，插件发的是跨站请求（Origin 为 chrome-extension://），两者会被区别对待。请按顺序排查：" +
+    "① 关闭 qB「选项 → Web UI」里的「启用跨站请求伪造(CSRF)保护」；" +
+    "② 关闭「验证 Host 头」，或把你的外网域名加进「服务器域名」白名单（填 * 放行全部）；" +
+    "③ 如果套了 nginx / Cloudflare / frp，检查它们是否拦截了带 Origin 的跨站请求或非浏览器 UA。" +
+    "展开日志里的 qb:res-error 可以看到响应体和 server 头，能直接看出是 qB 还是代理拒绝的。";
   const hint = result?.failedStage === "reachability"
     ? "浏览器没有收到 qB 的 HTTP 响应。请确认 WebUI 已启动、地址和端口正确；如果地址改过，还要确认扩展拥有该地址的访问权限，并检查 HTTP/HTTPS 是否一致。"
     : result?.failedStage === "login"
-      ? "qB 服务可以访问，但登录未通过。请检查账号密码，以及 WebUI 的 Host Header、CSRF 和认证设置。"
+      ? (is403
+        ? `登录阶段${forbiddenHint}`
+        : "qB 服务可以访问，但登录未通过。请检查账号密码，以及 WebUI 的 Host Header、CSRF 和认证设置。")
       : result?.failedStage === "api"
-        ? "登录成功，但 Web API 版本接口异常。请检查 qB WebUI/API 设置。"
+        ? (is403
+          ? `登录通过但 Web API ${forbiddenHint} 登录能过而 API 被拒，通常是会话 Cookie 没能随跨站请求发出（qB 的 SID 是 SameSite=Strict），此时优先查代理是否改写了 Set-Cookie。`
+          : "登录成功，但 Web API 版本接口异常。请检查 qB WebUI/API 设置。")
         : "网络、登录和 Web API 均正常。";
   panel.innerHTML = `
     <div class="qb-diagnostic-title">
@@ -1387,7 +1406,6 @@ const enqueueTorrentDirectToQb = async (torrent, downloadUrl, operationId) => {
   const client = await createDownloaderClient(operationId);
   const savePath = downloader.savePath || "";
   const category = downloader.category || "PT_AGENT";
-  await client.login();
   await client.ensureCategory(category, savePath);
   const tag = [
     globalThis.PT_AGENT_QB.torrentTags(torrent.freeEndAt || ""),
@@ -1421,6 +1439,40 @@ const enqueueTorrentDirectToQb = async (torrent, downloadUrl, operationId) => {
       score: Number(torrent.score || 0)
     }
   };
+};
+
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+// qB 收下种子后要解析元数据才会出现在任务列表里，大种子或繁忙时会超过一两秒。
+// 单次定时检查太脆弱，这里轮询几轮，任一轮匹配上就算成功。
+const verifyEnqueued = async (torrent, operationId, { attempts = 4, delayMs = 1500 } = {}) => {
+  for (let attempt = 1; attempt <= attempts; attempt += 1) {
+    await sleep(delayMs);
+    await refreshQbTorrents({ silent: true, operationId });
+    const { torrent: landed, matchedBy } = globalThis.PT_AGENT_QB.matchTorrent(torrent, state.qbTorrents);
+    debug(
+      "qb:verify",
+      {
+        title: torrent.title,
+        attempt,
+        landedInQb: Boolean(landed),
+        matchedBy,
+        qbName: landed?.name,
+        qbTorrents: state.qbTorrents.length
+      },
+      operationId
+    );
+    if (landed) {
+      renderList();
+      return landed;
+    }
+  }
+  showToast(
+    `⚠️ qB 接受了请求，但 ${(attempts * delayMs) / 1000} 秒内未出现任务「${torrent.title}」。` +
+    `可能是：保存目录无效、重复任务、或种子被 qB 拒绝。日志里看 qb:add-result 和 qb:verify。`,
+    "error"
+  );
+  return null;
 };
 
 const enqueueTorrent = async (torrent, { manualOverride = false, batchQueued = 0 } = {}) => {
@@ -1481,21 +1533,7 @@ const enqueueTorrent = async (torrent, { manualOverride = false, batchQueued = 0
     setQbMessage(`${okMessage}；下载器：${result.downloader}，分类：${result.category}`, "success");
     showToast(`✅ ${okMessage}`, "success");
     // 发送后验证：qB 可能回「Ok」却因保存目录无效/重复/被拒而不真正添加，此处兜底提示，避免假成功。
-    setTimeout(async () => {
-      await refreshQbTorrents({ silent: true, operationId });
-      const landed = findQbTorrent(torrent);
-      debug(
-        "qb:verify",
-        { title: torrent.title, landedInQb: Boolean(landed), qbTorrents: state.qbTorrents.length },
-        operationId
-      );
-      if (!landed) {
-        showToast(
-          `⚠️ qB 接受了请求，但未出现任务「${torrent.title}」。可能是：保存目录无效、重复任务、或种子被 qB 拒绝。控制台看 [PT] qb:add-result。`,
-          "error"
-        );
-      }
-    }, 1800);
+    void verifyEnqueued(torrent, operationId);
     return true;
   } catch (error) {
     state.qbPushStatus.set(key, "error");

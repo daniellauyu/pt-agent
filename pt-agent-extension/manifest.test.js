@@ -38,15 +38,21 @@ test("keeps the toolbar popup as the compact mode", () => {
   assert.equal(manifest.action.default_popup, "popup.html");
 });
 
-test("publishes the configurable download policy update as version 0.15.0", () => {
-  assert.equal(manifest.version, "0.15.0");
+test("publishes the CSRF and session-reuse fix as version 0.16.0", () => {
+  assert.equal(manifest.version, "0.16.0");
+});
+
+test("can strip Origin/Referer only on hosts the user granted", () => {
+  // 用 WithHostAccess 变体：规则只能作用于已授权的下载器地址，不需要全网络拦截权限
+  assert.ok(manifest.permissions.includes("declarativeNetRequestWithHostAccess"));
+  assert.ok(!manifest.permissions.includes("declarativeNetRequest"));
 });
 
 test("service worker imports and migrates the local downloader preset", () => {
   const background = fs.readFileSync(path.join(__dirname, "background.js"), "utf8");
   ["logger.js", "private-config.js", "guard-engine.js", "qb-client.js",
    "downloader-registry.js", "downloader-store.js", "site-store.js",
-   "network-router.js", "host-permissions.js"].forEach((file) => {
+   "network-router.js", "host-permissions.js", "request-rules.js"].forEach((file) => {
     assert.match(background, new RegExp(`"${file.replace(".", "\\.")}"`), `${file} must be imported`);
   });
   assert.match(background, /PT_AGENT_LOGGER\.installStorageOwner\(\)/);
@@ -67,6 +73,15 @@ test("never overwrites downloader settings the user already saved in the panel",
       `${field} must fall back to the preset instead of replacing the stored value`
     );
   });
+});
+
+test("free guard backs off after an auth failure instead of hammering every minute", () => {
+  const background = fs.readFileSync(path.join(__dirname, "background.js"), "utf8");
+  // 每分钟一次的后台扫描若在被封禁后继续重试，封禁窗口会被不断刷新
+  assert.match(background, /ptAgentGuardAuthCooldown/);
+  assert.match(background, /cooldownUntil > Date\.now\(\)/);
+  assert.match(background, /QB_IP_BANNED/);
+  assert.doesNotMatch(background, /await client\.login\(\)/);
 });
 
 test("free guard picks a downloader by reachability and skips unauthorized hosts", () => {

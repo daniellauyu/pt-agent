@@ -77,7 +77,7 @@ test("configures multiple downloaders and sites from a dedicated settings menu",
   assert.doesNotMatch(script, /defaultQbSettings/);
   assert.doesNotMatch(script, /saveQbSettings/);
   ["downloader-registry.js", "downloader-store.js", "site-store.js",
-   "network-router.js", "host-permissions.js"].forEach((file) => {
+   "network-router.js", "host-permissions.js", "request-rules.js"].forEach((file) => {
     assert.ok(
       html.indexOf(`src="${file}"`) > -1 && html.indexOf(`src="${file}"`) < html.indexOf('src="popup.js"'),
       `${file} must load before popup logic`
@@ -142,6 +142,21 @@ test("builds every downloader client through the shared adapter layer", () => {
   assert.match(script, /const createDownloaderClient = async/);
   assert.match(script, /PT_AGENT_DOWNLOADER_TYPES\.createAdapter/);
   assert.doesNotMatch(script, /PT_AGENT_QB\.createClient/);
+});
+
+test("sends every downloader request through the Origin-stripping fetch", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  const background = fs.readFileSync(path.join(extensionDir, "background.js"), "utf8");
+  assert.match(script, /const downloaderFetch = requestRules\.wrapFetch/);
+  assert.match(background, /wrapFetch\(globalThis\.fetch\.bind\(globalThis\)\)/);
+  // 每一处适配器都要用包装后的 fetch，漏一处那条路径就会继续 403
+  const adapterCalls = script.match(/createAdapter\(/g) || [];
+  const wrappedCalls = script.match(/fetchImpl: downloaderFetch/g) || [];
+  assert.equal(
+    wrappedCalls.length,
+    adapterCalls.length,
+    "every createAdapter call must pass the wrapped fetch"
+  );
 });
 
 test("resource buttons keep one-click download for risk but keep rejects blocked", () => {
@@ -301,6 +316,16 @@ test("surfaces enqueue failures via a global toast and post-send verification", 
   assert.match(script, /showToast\(`❌ 发送失败/);
   assert.match(script, /qb:verify/);
   assert.match(script, /未出现任务/);
+});
+
+test("verifies a sent torrent by source tag and retries while qB parses it", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  // 只按标题匹配会把"其实已经添加成功"误报成失败：站点标题和 qB 任务名经常不同
+  assert.match(script, /PT_AGENT_QB\.matchTorrent\(torrent, state\.qbTorrents\)/);
+  assert.doesNotMatch(script, /PT_AGENT_QB\.findMatchingTorrent\(torrent\.title/);
+  const verify = script.match(/const verifyEnqueued = async[\s\S]*?\n};/)?.[0] || "";
+  assert.match(verify, /for \(let attempt = 1; attempt <= attempts/);
+  assert.match(verify, /matchedBy/);
 });
 
 test("loads the M-Team historical backfill helper before the popup logic", () => {

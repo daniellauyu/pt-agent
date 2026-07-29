@@ -5,8 +5,19 @@ globalThis.PT_AGENT_QB = (() => {
     return new URL(`api/v2/${String(path).replace(/^\/+/, "")}`, normalizeAddress(settings.address)).toString();
   };
 
+  // qB 在连续认证失败后会封禁 IP（默认 5 次 / 封 1 小时）。这类 403 绝不能重试登录，
+  // 否则每次操作都再撞一次，封禁永远不会自然恢复。
+  const isBanMessage = (text) => {
+    return /banned|封禁|封禁|too many failed|失败次数过多/i.test(String(text || ""));
+  };
+
   const createClient = (settings, fetchImpl = globalThis.fetch.bind(globalThis), onLog = () => {}) => {
-    const request = async (path, options = {}) => {
+    // qB 登录后会下发 SID Cookie，后续请求靠它维持会话。
+    // 以前每个操作都先 login() 一次，等于自制登录风暴，密码一旦不对立刻触发封禁。
+    // 现在改成：直接发请求，只有真的因为没有会话被拒时才登录一次并重试。
+    let sessionReady = false;
+
+    const request = async (path, options = {}, { allowAuthRetry = true } = {}) => {
       const method = options.method || "GET";
       const url = endpoint(settings, path);
       onLog("qb:req", { method, path, url });
@@ -18,12 +29,45 @@ globalThis.PT_AGENT_QB = (() => {
         throw new Error(`qBittorrent 无法连接（${String(error?.message || error)}）`);
       }
       onLog("qb:res", { path, status: response.status, ok: response.ok });
-      if (!response.ok) {
-        const detail = (await response.text()).trim();
-        onLog("qb:res-error", { path, status: response.status, detailLength: detail.length });
-        throw new Error(`qBittorrent 请求失败（HTTP ${response.status}）`);
+      if (response.ok) {
+        if (path === "auth/login") sessionReady = true;
+        return response;
       }
-      return response;
+
+      // 响应体只能读一次，这里统一读出来供后续所有判断复用。
+      const detail = (await response.text()).trim();
+      const isLoginCall = path === "auth/login";
+
+      if (response.status === 403 && isBanMessage(detail)) {
+        sessionReady = false;
+        const banError = new Error(`qBittorrent 已封禁当前 IP：${detail}`);
+        banError.code = "QB_IP_BANNED";
+        onLog("qb:banned", { path, detail: detail.slice(0, 300) });
+        throw banError;
+      }
+
+      if (response.status === 403 && !isLoginCall && allowAuthRetry) {
+        // 会话缺失或过期：登录一次再重试，且只重试一次，避免和封禁互相放大。
+        onLog("qb:session-expired", { path });
+        sessionReady = false;
+        await login();
+        return request(path, options, { allowAuthRetry: false });
+      }
+
+      // 4xx/5xx 的响应体决定了是谁拒绝的：qB 自身返回 "Unauthorized"，
+      // 反向代理返回 HTML 错误页，Cloudflare 会带 Ray ID。不记下来就没法定位。
+      onLog("qb:res-error", {
+        path,
+        status: response.status,
+        server: response.headers.get("server") || undefined,
+        contentType: response.headers.get("content-type") || undefined,
+        detailLength: detail.length,
+        detail: detail.slice(0, 300)
+      });
+      const hint = detail ? `：${detail.replace(/\s+/g, " ").slice(0, 120)}` : "";
+      const error = new Error(`qBittorrent 请求失败（HTTP ${response.status}）${hint}`);
+      if (isLoginCall) error.code = "QB_LOGIN_FAILED";
+      throw error;
     };
 
     const login = async () => {
@@ -270,6 +314,26 @@ globalThis.PT_AGENT_QB = (() => {
     }) || null;
   };
 
+  // 站点标题和 qB 任务名（取自种子文件内的 name 字段）经常不一致，只靠名称匹配会误判成"没添加成功"。
+  // 入队时写入的 ptagent-source=<站点>:<种子ID> 是精确标识，优先用它。
+  const findTorrentBySource = (site, torrentId, torrents) => {
+    const normalizedSite = String(site || "").trim().toLowerCase();
+    const normalizedId = String(torrentId || "").trim();
+    if (!normalizedSite || !normalizedId) return null;
+    return (torrents || []).find((torrent) => {
+      const source = sourceFromTags(torrent.tags);
+      return source && source.site === normalizedSite && source.torrentId === normalizedId;
+    }) || null;
+  };
+
+  // 先按来源标签精确匹配，找不到再退回名称模糊匹配（兼容本版本之前添加的旧任务）。
+  const matchTorrent = (resource, torrents) => {
+    const bySource = findTorrentBySource(resource?.site, resource?.torrentId, torrents);
+    if (bySource) return { torrent: bySource, matchedBy: "source-tag" };
+    const byName = findMatchingTorrent(resource?.title, torrents);
+    return { torrent: byName, matchedBy: byName ? "name" : "none" };
+  };
+
   const summarizeMteamSeeding = (torrents) => {
     const completed = (torrents || []).filter((torrent) => {
       let trackerHost = "";
@@ -300,6 +364,8 @@ globalThis.PT_AGENT_QB = (() => {
     deadlineFromTags,
     deadlineTag,
     findMatchingTorrent,
+    findTorrentBySource,
+    matchTorrent,
     normalizeAddress,
     normalizeTorrentName,
     sourceFromTags,

@@ -287,3 +287,131 @@ test("summarizes every completed M-Team torrent in qB regardless of ptagent tags
   assert.equal(summary.stateCounts.queuedUP, 1);
   assert.equal(summary.stateCounts.uploading, 1);
 });
+
+test("surfaces who rejected a 403 instead of only the status code", async () => {
+  const logs = [];
+  const fetchMock = async () => new Response("Unauthorized", {
+    status: 403,
+    headers: { server: "nginx/1.24.0", "content-type": "text/plain" }
+  });
+  const client = loadClient().createClient(
+    { address: "https://qb.example.com/", username: "admin", password: "secret" },
+    fetchMock,
+    (event, data) => logs.push({ event, data })
+  );
+
+  // 错误信息要带上响应体，否则外网 403 时看不出是 qB 还是反向代理拒绝的
+  await assert.rejects(() => client.login(), /HTTP 403.*Unauthorized/s);
+
+  const failure = logs.find((entry) => entry.event === "qb:res-error");
+  assert.ok(failure, "a failed response must be logged");
+  assert.equal(failure.data.status, 403);
+  assert.equal(failure.data.detail, "Unauthorized");
+  assert.equal(failure.data.server, "nginx/1.24.0");
+});
+
+test("truncates a long error page so the log stays readable", async () => {
+  const fetchMock = async () => new Response("x".repeat(5000), { status: 403 });
+  const logs = [];
+  const client = loadClient().createClient(
+    { address: "https://qb.example.com/", username: "a", password: "b" },
+    fetchMock,
+    (event, data) => logs.push({ event, data })
+  );
+  await assert.rejects(() => client.login());
+  assert.equal(logs.find((entry) => entry.event === "qb:res-error").data.detail.length, 300);
+});
+
+test("reuses the session cookie instead of logging in for every operation", async () => {
+  const calls = [];
+  const fetchMock = async (url) => {
+    calls.push(new URL(url).pathname);
+    return new Response(JSON.stringify([]), { headers: { "content-type": "application/json" } });
+  };
+  const client = loadClient().createClient(
+    { address: "http://192.168.1.10:8080/", username: "admin", password: "secret" },
+    fetchMock
+  );
+  await client.listTorrents("all");
+  await client.listTorrents("all");
+  // 会话有效时一次登录都不该发：过去每个操作都先 login，正是触发 qB 封禁 IP 的原因
+  assert.equal(calls.filter((path) => path.endsWith("/auth/login")).length, 0);
+});
+
+test("logs in once and retries when the session has expired", async () => {
+  const calls = [];
+  let authed = false;
+  const fetchMock = async (url) => {
+    const path = new URL(url).pathname;
+    calls.push(path);
+    if (path.endsWith("/auth/login")) {
+      authed = true;
+      return new Response("Ok.");
+    }
+    if (!authed) return new Response("Forbidden", { status: 403 });
+    return new Response(JSON.stringify([]), { headers: { "content-type": "application/json" } });
+  };
+  const client = loadClient().createClient(
+    { address: "http://192.168.1.10:8080/", username: "admin", password: "secret" },
+    fetchMock
+  );
+  assert.deepEqual(Array.from(await client.listTorrents("all")), []);
+  assert.equal(calls.filter((path) => path.endsWith("/auth/login")).length, 1);
+});
+
+test("never retries the login when qBittorrent has banned the IP", async () => {
+  const calls = [];
+  const fetchMock = async (url) => {
+    calls.push(new URL(url).pathname);
+    return new Response("身份认证失败次数过多，您的 IP 地址已被封禁。", { status: 403 });
+  };
+  const client = loadClient().createClient(
+    { address: "https://qb.example.com/", username: "admin", password: "secret" },
+    fetchMock
+  );
+  const error = await client.listTorrents("all").then(() => null, (err) => err);
+  assert.equal(error.code, "QB_IP_BANNED");
+  assert.match(error.message, /已封禁当前 IP/);
+  // 封禁时再登录只会把封禁窗口刷新，必须一次都不试
+  assert.equal(calls.filter((path) => path.endsWith("/auth/login")).length, 0);
+});
+
+test("marks a failed login so the caller can back off", async () => {
+  const fetchMock = async () => new Response("Forbidden", { status: 403 });
+  const client = loadClient().createClient(
+    { address: "https://qb.example.com/", username: "admin", password: "wrong" },
+    fetchMock
+  );
+  const error = await client.login().then(() => null, (err) => err);
+  assert.equal(error.code, "QB_LOGIN_FAILED");
+});
+
+test("verifies a sent torrent by its source tag, not by the site title", () => {
+  const qb = loadClient();
+  const torrents = [
+    // qB 里的任务名来自种子文件，和站点标题往往对不上
+    { name: "The.Dink.2026.2160p.ATVP.WEB-DL.DDP5.1.Atmos.H265-MTeam", tags: "ptagent, ptagent-source=mteam:1213980" }
+  ];
+  const resource = { site: "mteam", torrentId: "1213980", title: "The Dink 2026 2160p 全片名与种子名不一致" };
+
+  assert.equal(qb.findMatchingTorrent(resource.title, torrents), null, "名称匹配在这种情况下必然失败");
+  const matched = qb.matchTorrent(resource, torrents);
+  assert.equal(matched.matchedBy, "source-tag");
+  assert.equal(matched.torrent.name, torrents[0].name);
+});
+
+test("falls back to name matching for tasks added before source tags existed", () => {
+  const qb = loadClient();
+  const torrents = [{ name: "Click 2006 BluRay 2160p HDR", tags: "ptagent" }];
+  const matched = qb.matchTorrent({ site: "mteam", torrentId: "999", title: "Click 2006 BluRay 2160p HDR" }, torrents);
+  assert.equal(matched.matchedBy, "name");
+  assert.ok(matched.torrent);
+});
+
+test("does not match a different torrent from the same site", () => {
+  const qb = loadClient();
+  const torrents = [{ name: "Other", tags: "ptagent, ptagent-source=mteam:111" }];
+  const matched = qb.matchTorrent({ site: "mteam", torrentId: "222", title: "完全不同的标题" }, torrents);
+  assert.equal(matched.matchedBy, "none");
+  assert.equal(matched.torrent, null);
+});

@@ -99,9 +99,28 @@ Chrome 扩展读不到 WiFi SSID（`chrome.networking.onc` 只在 ChromeOS 企�
 
 站点地址、API 地址和 API Key 单独配置，支持多站点。目前资源聚合只实现了 M-Team 的 API 模式，其它站点走页面 DOM 扫描。
 
-### 排错
+### 跨站请求与 403
 
-如果连接提示 `403`、CSRF、Origin 或 Host Header 错误，先确认该地址已授权（设置里没有「未授权」标记），再检查 qBittorrent WebUI 的 CSRF 和反向代理设置。「独立诊断」会分别报告网络可达性、登录鉴权和 Web API 三个阶段。
+浏览器地址栏访问 qB 是同站请求，插件发出的是跨站请求（Origin 为 `chrome-extension://<id>`）。qBittorrent 的 CSRF 保护会比较 Origin/Referer 与自身 Host，不一致就返回 403 —— 这就是「浏览器能登录，插件却 403」的原因。
+
+qB 的判定规则是「Origin 和 Referer 都为空则不算跨站请求」，因此插件用 `declarativeNetRequest` 在发出请求前剥掉这两个头，**你不需要关闭 qB 的 CSRF 保护**。实现要点（参考 PT-depiler）：
+
+- 用 **session rules** 而非 dynamic rules，不写盘，浏览器重启即失效
+- 每次请求现建一条唯一 id 的规则，请求结束立即删除，生效窗口最小
+- 用 `excludedTabIds` 排除所有其它标签页
+
+最后一条是安全关键：DNR 规则按请求目标 URL 匹配，若不排除标签页，任意网页向同一个 qB 地址发起的跨站 XHR 也会被剥掉 Origin，等于替所有网站关掉了 qB 的 CSRF 保护。规则只对插件自己发出的请求生效。
+
+权限用的是 `declarativeNetRequestWithHostAccess`，只能作用于你已授权的下载器地址。
+
+### 仍需在 qB 侧处理的情况
+
+剥掉请求头解决不了下面两类 403，需要你自己改配置：
+
+- **验证 Host 头**：qB「选项 → Web UI」里的「验证 Host 头」会拿 `Host` 与「服务器域名」白名单比对。外网用域名访问时，要把域名加进白名单（填 `*` 放行全部）
+- **反向代理 / Cloudflare**：nginx、frp 或 Cloudflare 的 WAF、Bot Fight Mode 可能拦截跨站 XHR。此时 403 来自代理而不是 qB
+
+「独立诊断」会分阶段报告网络可达性、登录鉴权和 Web API；日志页展开 `qb:res-error` 能看到响应体前 300 字符和 `server` 头，可以直接判断是 qB 还是代理拒绝的。
 
 ## 加载方式
 

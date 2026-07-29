@@ -7,7 +7,8 @@ importScripts(
   "downloader-store.js",
   "site-store.js",
   "network-router.js",
-  "host-permissions.js"
+  "host-permissions.js",
+  "request-rules.js"
 );
 
 globalThis.PT_AGENT_LOGGER.installStorageOwner();
@@ -74,7 +75,8 @@ const runFreeGuard = async () => {
   const stored = await chrome.storage.local.get([
     "ptAgentSettings",
     "ptAgentGuardStates",
-    "ptAgentGuardRoute"
+    "ptAgentGuardRoute",
+    "ptAgentGuardAuthCooldown"
   ]);
   const settings = {
     guardMinutes: 10,
@@ -86,10 +88,24 @@ const runFreeGuard = async () => {
   if (!settings.guardMonitorEnabled) return;
 
   const onLog = (event, data) => globalThis.PT_AGENT_LOGGER.legacy(event, data, { operationId });
+  // Service Worker 发出的请求 tabId 为 -1，不会被 excludedTabIds 排除，规则正常生效。
+  const downloaderFetch = globalThis.PT_AGENT_REQUEST_RULES
+    .createManager({ onLog })
+    .wrapFetch(globalThis.fetch.bind(globalThis));
   const permissions = globalThis.PT_AGENT_HOST_PERMISSIONS.createManager();
   const downloaders = await globalThis.PT_AGENT_DOWNLOADER_STORE.createStore().list();
   const usable = downloaders.filter((item) => item.enabled && item.address && item.password);
   if (!usable.length) return;
+
+  // 认证类失败要退避。后台每分钟一次，若被 qB 封禁还继续重试，封禁窗口会被不断刷新，
+  // 用户永远等不到自动恢复。
+  const cooldownUntil = Number(stored.ptAgentGuardAuthCooldown || 0);
+  if (cooldownUntil > Date.now()) {
+    onLog("guard:auth-cooldown", {
+      resumesInSeconds: Math.round((cooldownUntil - Date.now()) / 1000)
+    });
+    return;
+  }
 
   try {
     globalThis.PT_AGENT_LOGGER.legacy("guard:scan-start", { downloaders: usable.length }, { operationId });
@@ -100,7 +116,7 @@ const runFreeGuard = async () => {
           return { ok: false, error: "缺少主机访问权限，请在插件设置里授权" };
         }
         return globalThis.PT_AGENT_DOWNLOADER_TYPES
-          .createAdapter(downloader, { onLog })
+          .createAdapter(downloader, { fetchImpl: downloaderFetch, onLog })
           .probe({ timeoutMs: globalThis.PT_AGENT_NETWORK_ROUTER.DEFAULT_TIMEOUT_MS });
       },
       cache: stored.ptAgentGuardRoute
@@ -114,8 +130,11 @@ const runFreeGuard = async () => {
     if (!selection.downloader || selection.reason === "fallback") {
       throw new Error(globalThis.PT_AGENT_NETWORK_ROUTER.describe(selection));
     }
-    const client = globalThis.PT_AGENT_DOWNLOADER_TYPES.createAdapter(selection.downloader, { onLog });
-    await client.login();
+    const client = globalThis.PT_AGENT_DOWNLOADER_TYPES.createAdapter(
+      selection.downloader,
+      { fetchImpl: downloaderFetch, onLog }
+    );
+    // 后台每分钟跑一次，绝不能每次都登录：那正是把 IP 打到被 qB 封禁的原因。
     const torrents = await client.listTorrents("all");
     const previousStates = stored.ptAgentGuardStates || {};
     const nextStates = { ...previousStates };
@@ -166,23 +185,35 @@ const runFreeGuard = async () => {
         });
       }
     }
-    await chrome.storage.local.set({ ptAgentGuardStates: nextStates });
+    await chrome.storage.local.set({
+      ptAgentGuardStates: nextStates,
+      ptAgentGuardAuthCooldown: 0
+    });
     globalThis.PT_AGENT_LOGGER.legacy(
       "guard:scan-completed",
       { torrents: torrents.length },
       { operationId }
     );
   } catch (error) {
-    globalThis.PT_AGENT_LOGGER.legacy(
-      "guard:scan-error",
-      { error: error.message || String(error) },
-      { operationId }
-    );
+    const reason = error.message || String(error);
+    // 被封禁退避 30 分钟，普通登录失败退避 10 分钟；其余错误（网络不通等）不退避。
+    const cooldownMinutes = error.code === "QB_IP_BANNED"
+      ? 30
+      : error.code === "QB_LOGIN_FAILED" || /账号或密码错误|登录失败/.test(reason)
+        ? 10
+        : 0;
+    if (cooldownMinutes > 0) {
+      await chrome.storage.local.set({
+        ptAgentGuardAuthCooldown: Date.now() + cooldownMinutes * 60000
+      });
+      onLog("guard:auth-backoff", { code: error.code || null, cooldownMinutes });
+    }
+    globalThis.PT_AGENT_LOGGER.legacy("guard:scan-error", { error: reason }, { operationId });
     await globalThis.PT_AGENT_LOGGER.appendAudit({
       operation_id: operationId,
       action: "guard_error",
       status: "failed",
-      reason: error.message || String(error),
+      reason: cooldownMinutes > 0 ? `${reason}（暂停后台检查 ${cooldownMinutes} 分钟）` : reason,
       deleteFiles: false
     });
   }

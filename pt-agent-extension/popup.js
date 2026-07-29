@@ -11,6 +11,7 @@ const state = {
   routeCache: null,
   lastSelection: null,
   qbTorrents: [],
+  torrentLinks: [],
   excludedTorrents: [],
   qbSeedingSummary: null,
   qbPushStatus: new Map(),
@@ -23,6 +24,7 @@ const exclusionStore = globalThis.PT_AGENT_EXCLUSIONS.createStore();
 const downloaderStore = globalThis.PT_AGENT_DOWNLOADER_STORE.createStore();
 const siteStore = globalThis.PT_AGENT_SITE_STORE.createStore();
 const hostPermissions = globalThis.PT_AGENT_HOST_PERMISSIONS.createManager();
+const linkStore = globalThis.PT_AGENT_TORRENT_LINKS.createStore();
 const requestRules = globalThis.PT_AGENT_REQUEST_RULES.createManager({
   onLog: (event, data) => debug(event, data)
 });
@@ -728,8 +730,23 @@ const resolveTorrentDownloadUrl = async (torrent, operationId) => {
   return downloadUrl;
 };
 
-const findQbTorrent = (torrent) => {
-  return globalThis.PT_AGENT_QB.matchTorrent(torrent, state.qbTorrents).torrent;
+// 匹配优先级：持久化关联（按 infoHash 精确）> 来源标签 > 名称模糊匹配。
+const matchQbTorrent = (torrent) => {
+  const index = globalThis.PT_AGENT_TORRENT_LINKS.createIndex(state.torrentLinks);
+  const linked = index.forResource(torrent.site, torrent.torrentId);
+  if (linked) {
+    const task = state.qbTorrents.find((item) => String(item.hash || "").toLowerCase() === linked.hash);
+    if (task) return { torrent: task, matchedBy: "link" };
+  }
+  return globalThis.PT_AGENT_QB.matchTorrent(torrent, state.qbTorrents);
+};
+
+const findQbTorrent = (torrent) => matchQbTorrent(torrent).torrent;
+
+// 反查：下载器任务对应哪个站点资源，用于在任务列表里显示资源名。
+const resourceForTask = (task) => {
+  const index = globalThis.PT_AGENT_TORRENT_LINKS.createIndex(state.torrentLinks);
+  return index.forHash(task.hash);
 };
 
 const isActiveDownload = (torrent) => {
@@ -1126,6 +1143,7 @@ const renderQbTorrents = () => {
       guardMinutes: state.policySettings?.guardMinutes || 10
     });
     const guard = guardPresentation(guardResult);
+    const linkedResource = resourceForTask(torrent);
     const excluded = isTorrentExcluded({
       ...torrent,
       infoHash: torrent.hash,
@@ -1136,6 +1154,9 @@ const renderQbTorrents = () => {
       <div class="qb-row">
         <div>
           <div class="qb-name">${escapeHtml(torrent.name || "(未命名任务)")}</div>
+          ${linkedResource
+            ? `<div class="qb-resource" title="站点资源名">↳ ${escapeHtml(linkedResource.siteTitle || linkedResource.torrentId)}</div>`
+            : ""}
           <div class="qb-subtext">${escapeHtml(torrent.hash || "")}</div>
         </div>
         <div class="cell">${escapeHtml(torrent.state || "unknown")}</div>
@@ -1254,6 +1275,10 @@ const refreshQbTorrents = async ({
     const client = await createDownloaderClient(operationId);
     // 不再预先登录：请求层会在真的缺少会话时登录一次并重试，避免每个操作都打一次登录。
     state.qbTorrents = await client.listTorrents("all");
+    // 用任务上的 ptagent-source 标签补齐关联，让本功能之前添加的任务也能对上号。
+    await linkStore.backfillFromTasks(state.qbTorrents, globalThis.PT_AGENT_QB.sourceFromTags);
+    await linkStore.prune(state.qbTorrents.map((item) => item.hash));
+    state.torrentLinks = await linkStore.list();
     state.qbSeedingSummary = globalThis.PT_AGENT_QB.summarizeMteamSeeding(state.qbTorrents);
     const downloadingCount = state.qbTorrents.filter(isActiveDownload).length;
     debug(
@@ -1380,10 +1405,18 @@ const diagnoseQbConnection = async () => {
 // 在浏览器侧抓取 .torrent 文件字节（插件有 M-Team 权限与用户会话），失败则返回 null 由调用方回退到 URL。
 const fetchTorrentFile = async (downloadUrl, operationId) => {
   try {
-    const response = await fetch(downloadUrl, { credentials: "omit" });
+    const response = await fetch(downloadUrl, { credentials: "omit", redirect: "follow" });
     debug(
       "qb:torrent-fetch",
-      { ok: response.ok, status: response.status, type: response.headers.get("content-type") },
+      {
+        ok: response.ok,
+        status: response.status,
+        type: response.headers.get("content-type"),
+        // M-Team 的下载地址会 302 到 CDN 节点，记下最终落点便于确认权限是否覆盖到位。
+        finalHost: (() => {
+          try { return new URL(response.url || downloadUrl).hostname; } catch (_) { return ""; }
+        })()
+      },
       operationId
     );
     if (!response.ok) return null;
@@ -1396,7 +1429,18 @@ const fetchTorrentFile = async (downloadUrl, operationId) => {
     }
     return blob;
   } catch (error) {
-    debug("qb:torrent-fetch-error", String(error?.message || error), operationId);
+    // 常见于下载地址 302 到未授权的 CDN 域名：扩展对该域名没有 host 权限，就要走 CORS 且被拒。
+    // 这里不算致命错误，会降级成把 URL 交给下载器自己抓，但成功率更低，所以要明确记录。
+    const reason = String(error?.message || error);
+    debug(
+      "qb:torrent-fetch-fallback",
+      {
+        reason,
+        likelyCors: /Failed to fetch|CORS|Access-Control/i.test(reason),
+        hint: "种子下载地址可能重定向到了未授权的 CDN 域名，已降级为让下载器自行抓取"
+      },
+      operationId
+    );
     return null;
   }
 };
@@ -1449,7 +1493,7 @@ const verifyEnqueued = async (torrent, operationId, { attempts = 4, delayMs = 15
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
     await sleep(delayMs);
     await refreshQbTorrents({ silent: true, operationId });
-    const { torrent: landed, matchedBy } = globalThis.PT_AGENT_QB.matchTorrent(torrent, state.qbTorrents);
+    const { torrent: landed, matchedBy } = matchQbTorrent(torrent);
     debug(
       "qb:verify",
       {
@@ -1463,6 +1507,16 @@ const verifyEnqueued = async (torrent, operationId, { attempts = 4, delayMs = 15
       operationId
     );
     if (landed) {
+      // 建立持久化关联，之后不再依赖名称猜测。
+      await linkStore.link({
+        site: torrent.site,
+        torrentId: torrent.torrentId,
+        hash: landed.hash,
+        siteTitle: torrent.title,
+        qbName: landed.name
+      });
+      state.torrentLinks = await linkStore.list();
+      renderQbTorrents();
       renderList();
       return landed;
     }
@@ -2077,12 +2131,14 @@ document.addEventListener("DOMContentLoaded", async () => {
     const [activeTab] = await chrome.tabs.query({ active: true, currentWindow: true });
     state.sourceTabId = activeTab?.id || null;
   }
-  [state.policySettings, state.downloaders, state.sites, state.excludedTorrents] = await Promise.all([
-    getSettings(),
-    downloaderStore.list(),
-    siteStore.list(),
-    exclusionStore.list()
-  ]);
+  [state.policySettings, state.downloaders, state.sites, state.excludedTorrents, state.torrentLinks] =
+    await Promise.all([
+      getSettings(),
+      downloaderStore.list(),
+      siteStore.list(),
+      exclusionStore.list(),
+      linkStore.list()
+    ]);
   fillGuardSettingsForm(state.policySettings);
   fillPolicySettingsForm(state.policySettings);
   await renderDownloaderSettings();

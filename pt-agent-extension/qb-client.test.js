@@ -415,3 +415,48 @@ test("does not match a different torrent from the same site", () => {
   assert.equal(matched.matchedBy, "none");
   assert.equal(matched.torrent, null);
 });
+
+test("treats any 2xx add response as success unless qB explicitly says it failed", async () => {
+  const qb = loadClient();
+  const cases = [
+    ["Ok.", "标准成功响应"],
+    ["", "空响应体（常见于反向代理改写）"],
+    ["ok.", "大小写不同"],
+    ["Ok", "缺少句点"]
+  ];
+  for (const [body, why] of cases) {
+    const client = qb.createClient(
+      { address: "http://qb.local/", username: "a", password: "b" },
+      async () => new Response(body)
+    );
+    const result = await client.addTorrent({ url: "https://tracker/1" });
+    assert.equal(result.success_count, 1, `${why} 不应被判成失败`);
+  }
+});
+
+test("still fails when qBittorrent explicitly rejects the torrent", async () => {
+  const client = loadClient().createClient(
+    { address: "http://qb.local/", username: "a", password: "b" },
+    async () => new Response("Fails.")
+  );
+  await assert.rejects(() => client.addTorrent({ url: "https://tracker/1" }), /拒绝了这个种子/);
+});
+
+test("does not fail an add whose JSON response omits the counters", async () => {
+  const client = loadClient().createClient(
+    { address: "http://qb.local/", username: "a", password: "b" },
+    async () => new Response("{}", { headers: { "content-type": "application/json" } })
+  );
+  const result = await client.addTorrent({ url: "https://tracker/1" });
+  assert.ok(result, "字段缺失时按成功处理，避免误报");
+});
+
+test("fails a JSON add response that reports only failures", async () => {
+  const client = loadClient().createClient(
+    { address: "http://qb.local/", username: "a", password: "b" },
+    async () => new Response(JSON.stringify({ success_count: 0, failure_count: 2 }), {
+      headers: { "content-type": "application/json" }
+    })
+  );
+  await assert.rejects(() => client.addTorrent({ url: "https://tracker/1" }), /添加失败/);
+});

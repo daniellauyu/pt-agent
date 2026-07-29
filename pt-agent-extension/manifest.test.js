@@ -17,11 +17,12 @@ test("grants scripting access to M-Team pages", () => {
 
 test("does not hard-code any downloader host in the manifest", () => {
   // 写死的局域网地址是上一版的真实故障：用户在面板里改了 qB 地址后 fetch 被权限挡掉。
+  // 站点和它的下载 CDN 可以固定声明；下载器地址由用户配置，只能走 optional_host_permissions。
   const hosts = manifest.host_permissions || [];
-  assert.ok(
-    hosts.every((host) => /m-team\.cc/.test(host)),
-    `host_permissions must only cover site hosts, got ${JSON.stringify(hosts)}`
-  );
+  hosts.forEach((host) => {
+    assert.doesNotMatch(host, /\d+\.\d+\.\d+\.\d+/, `${host} 看起来是写死的下载器 IP`);
+    assert.doesNotMatch(host, /:\d+/, `${host} 带端口，像是写死的下载器地址`);
+  });
 });
 
 test("requests downloader hosts at runtime through optional permissions", () => {
@@ -38,8 +39,14 @@ test("keeps the toolbar popup as the compact mode", () => {
   assert.equal(manifest.action.default_popup, "popup.html");
 });
 
-test("publishes the CSRF and session-reuse fix as version 0.16.0", () => {
-  assert.equal(manifest.version, "0.16.0");
+test("publishes the resource-to-task link update as version 0.17.0", () => {
+  assert.equal(manifest.version, "0.17.0");
+});
+
+test("covers the M-Team download CDN so the .torrent bytes can be fetched", () => {
+  // genDlToken 返回的地址会 302 到 CDN；域名没有 host 权限就要走 CORS，
+  // CDN 不返回 Access-Control-Allow-Origin，抓取必然失败并退化成让 qB 自己抓
+  assert.ok(manifest.host_permissions.includes("https://*.halomt.com/*"));
 });
 
 test("can strip Origin/Referer only on hosts the user granted", () => {

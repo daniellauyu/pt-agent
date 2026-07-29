@@ -105,29 +105,33 @@ globalThis.PT_AGENT_QB = (() => {
       onLog("qb:add-request", { route: file ? "file" : "url", filename: file ? filename : undefined, fileSize: file?.size, tag, savePath, category });
       const response = await request("torrents/add", { method: "POST", body });
       const contentType = response.headers.get("content-type") || "";
+      // 判定原则：HTTP 2xx 已经说明 qB 收下了请求，只有「明确的失败标志」才算失败。
+      // 之前要求响应体严格等于 "Ok."，任何空响应体、大小写差异或被反向代理改写过的响应
+      // 都会把实际添加成功的种子误报成失败。
       if (contentType.includes("application/json")) {
-        const result = await response.json();
-        onLog("qb:add-response", {
-          contentType,
-          successCount: result.success_count,
-          failureCount: result.failure_count
-        });
-        const success = (result.success_count ?? 0) > 0 && (result.failure_count ?? 0) === 0;
-        if (!success) {
-          throw new Error(
-            `qBittorrent 添加失败（成功 ${result.success_count ?? 0}，失败 ${result.failure_count ?? 0}）`
-          );
+        const result = await response.json().catch(() => null);
+        const successCount = Number(result?.success_count);
+        const failureCount = Number(result?.failure_count);
+        onLog("qb:add-response", { contentType, successCount, failureCount });
+        // 只有 qB 明确说「失败了 N 个且成功 0 个」才判失败；字段缺失一律按成功处理。
+        if (Number.isFinite(failureCount) && failureCount > 0 && !(successCount > 0)) {
+          throw new Error(`qBittorrent 添加失败（成功 ${successCount || 0}，失败 ${failureCount}）`);
         }
-        return result;
+        return result || { success_count: 1 };
       }
       const result = (await response.text()).trim();
+      const explicitFailure = /^fails?\.?$/i.test(result);
       onLog("qb:add-response", {
         contentType,
-        accepted: result === "Ok.",
+        status: response.status,
+        accepted: !explicitFailure,
+        body: result.slice(0, 120),
         responseLength: result.length
       });
-      if (result !== "Ok.") throw new Error("qBittorrent 添加失败（响应未确认成功）");
-      return { success_count: 1 };
+      if (explicitFailure) {
+        throw new Error(`qBittorrent 拒绝了这个种子（响应：${result}）`);
+      }
+      return { success_count: 1, response: result };
     };
 
     const listTorrents = async (filter = "all") => {

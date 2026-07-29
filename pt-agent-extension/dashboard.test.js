@@ -77,7 +77,8 @@ test("configures multiple downloaders and sites from a dedicated settings menu",
   assert.doesNotMatch(script, /defaultQbSettings/);
   assert.doesNotMatch(script, /saveQbSettings/);
   ["downloader-registry.js", "downloader-store.js", "site-store.js",
-   "network-router.js", "host-permissions.js", "request-rules.js"].forEach((file) => {
+   "network-router.js", "host-permissions.js", "request-rules.js",
+   "torrent-links.js"].forEach((file) => {
     assert.ok(
       html.indexOf(`src="${file}"`) > -1 && html.indexOf(`src="${file}"`) < html.indexOf('src="popup.js"'),
       `${file} must load before popup logic`
@@ -271,6 +272,16 @@ test("uploads the .torrent bytes fetched in the browser instead of only handing 
   assert.match(enqueue, /route: file \? "file" : "url"/);
 });
 
+test("degrades to the URL route with a clear reason when the CDN blocks the fetch", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  const fetchFile = script.match(/const fetchTorrentFile = async[\s\S]*?\n};/)?.[0] || "";
+  assert.match(fetchFile, /qb:torrent-fetch-fallback/);
+  assert.match(fetchFile, /likelyCors/);
+  assert.match(fetchFile, /finalHost/);
+  // 抓不到种子文件不能让整次下载失败，必须返回 null 走 URL 路由
+  assert.match(fetchFile, /return null;/);
+});
+
 test("enforces local admission before enqueueing and caps a batch push", () => {
   const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
   const enqueue = script.match(/const enqueueTorrent = async[\s\S]*?\n};/)?.[0] || "";
@@ -316,6 +327,19 @@ test("surfaces enqueue failures via a global toast and post-send verification", 
   assert.match(script, /showToast\(`❌ 发送失败/);
   assert.match(script, /qb:verify/);
   assert.match(script, /未出现任务/);
+});
+
+test("persists the resource-to-task link and shows the resource name on tasks", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  // 站点资源名和 qB 任务名是两套命名，必须持久化对应关系而不是每次猜
+  assert.match(script, /const matchQbTorrent =/);
+  assert.match(script, /index\.forResource\(torrent\.site, torrent\.torrentId\)/);
+  assert.match(script, /const resourceForTask =/);
+  assert.match(script, /qb-resource/);
+  assert.match(script, /await linkStore\.link\(/);
+  // 旧任务靠 ptagent-source 标签补齐，任务删除后清理关联
+  assert.match(script, /linkStore\.backfillFromTasks\(state\.qbTorrents/);
+  assert.match(script, /linkStore\.prune\(/);
 });
 
 test("verifies a sent torrent by source tag and retries while qB parses it", () => {

@@ -1115,6 +1115,17 @@ a.title:hover {
   padding-bottom: 0;
 }
 
+.qb-resource {
+  margin-top: 2px;
+  color: var(--accent);
+  font-size: 11px;
+  line-height: 1.4;
+  opacity: 0.9;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .settings-card-foot {
   display: flex;
   align-items: center;

@@ -1,0 +1,30 @@
+services:
+  ptagent:
+    build: .
+    image: pt-agent-daemon:latest
+    container_name: ptagent
+    restart: unless-stopped
+
+    # 配置和日志放宿主机目录，容器重建不丢。
+    # 把 .env 放进 ./data/ 即可自动读取（$PTAGENT_HOME/.env）。
+    volumes:
+      - ./data:/data
+
+    ports:
+      - "127.0.0.1:7788:7788"
+
+    environment:
+      # WebUI 在容器里必须绑 0.0.0.0，而绑非回环地址就强制要求令牌。
+      # 换成你自己的：openssl rand -hex 16
+      PTAGENT_WEB_TOKEN: "${PTAGENT_WEB_TOKEN:?请先设置 PTAGENT_WEB_TOKEN，例如 export PTAGENT_WEB_TOKEN=$(openssl rand -hex 16)}"
+      TZ: "${TZ:-Asia/Shanghai}"
+
+    # 下载器在宿主机或局域网另一台机器上时，用默认的 bridge 网络就够。
+    # 如果 qBittorrent 也是同一个 compose 里的服务，直接用服务名做地址即可。
+
+    # 这个进程能删文件，权限收到最小：不需要提权，也不需要写容器内的文件系统。
+    security_opt:
+      - no-new-privileges:true
+    read_only: true
+    tmpfs:
+      - /tmp

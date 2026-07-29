@@ -12,7 +12,9 @@ const vm = require("node:vm");
 
 const loadClient = () => {
   const context = vm.createContext({
-    URL, URLSearchParams, FormData, Blob, Response, Date, Number, String, Object, Array, Math,
+    // Headers 是 qb-client 组装请求头时用的：Node 侧要手动带 Cookie 和 Origin/Referer，
+    // 浏览器里这两样是自动的。vm 上下文不继承外层全局，漏掉哪个就会在运行时才炸。
+    URL, URLSearchParams, Headers, FormData, Blob, Response, Date, Number, String, Object, Array, Math,
     globalThis: null
   });
   context.globalThis = context;

@@ -1,6 +1,6 @@
 {
   "name": "pt-agent-daemon",
-  "version": "0.3.0",
+  "version": "0.4.0",
   "description": "PT Agent 终端守护进程：定时扫描 Free 资源、只下载推荐项、Free 到期自动清理，附带与浏览器插件同款 WebUI。",
   "type": "commonjs",
   "private": true,
@@ -15,9 +15,14 @@
     "bin/",
     "src/",
     "vendor/",
-    "scripts/sync-engines.js",
+    "scripts/",
+    "install.sh",
+    "Dockerfile",
+    "docker-compose.yml",
+    ".env.example",
     "README.md",
-    "AGENTS.md"
+    "AGENTS.md",
+    "DEPLOY.md"
   ],
   "scripts": {
     "start": "node bin/ptagent.js start",

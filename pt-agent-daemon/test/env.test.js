@@ -8,7 +8,7 @@ const fs = require("node:fs");
 const path = require("node:path");
 const test = require("node:test");
 
-const { applyEnv, mapEnv, parseEnvFile, toEnvFile } = require("../src/env");
+const { applyEnv, mapEnv, parseEnvFile, processOverrides, toEnvFile } = require("../src/env");
 const { cleanup, createHome, withHome } = require("./helpers");
 
 test("基本键值、注释、空行", () => {
@@ -196,4 +196,58 @@ test("--no-secrets 导出的模板不含密码，可以安全分享", () => {
 test("导出的文件带有醒目的密钥警告", () => {
   const text = toEnvFile({ daemon: {}, policy: {}, site: null, downloaders: [] });
   assert.match(text, /不要提交到仓库/);
+});
+
+test("只挑 PTAGENT_ 开头的环境变量，且排除决定「去哪找配置」的那两个", () => {
+  const picked = processOverrides({
+    PTAGENT_MIN_SCORE: "90",
+    PTAGENT_HOME: "/data",
+    PTAGENT_ENV_FILE: "/x/.env",
+    PTAGENT_WEB_TOKEN: "",
+    PATH: "/usr/bin",
+    HOME: "/root"
+  });
+  assert.deepEqual(picked, { PTAGENT_MIN_SCORE: "90" });
+});
+
+test("进程环境变量优先于 .env 文件", async () => {
+  const root = createHome();
+  const envFile = path.join(root, ".env");
+  fs.writeFileSync(envFile, "PTAGENT_WEB_HOST=127.0.0.1\nPTAGENT_MIN_SCORE=70\n");
+  try {
+    await withHome(root, async () => {
+      delete require.cache[require.resolve("../src/context")];
+      const { createContext } = require("../src/context");
+      const ctx = createContext({ mirrorToConsole: false });
+      // Docker 的 -e、systemd 的 Environment= 都走这条路：镜像里设的值必须能压过文件里的默认值。
+      await applyEnv(ctx, { env: { PTAGENT_WEB_HOST: "0.0.0.0" } });
+      assert.equal((await ctx.config.readDaemon()).webHost, "0.0.0.0", "环境变量没能覆盖 .env");
+      assert.equal((await ctx.config.readPolicy()).minimumScore, 70, ".env 里独有的项要保留");
+      await ctx.logger.flush();
+    });
+  } finally {
+    cleanup(root);
+  }
+});
+
+test("没有 .env 文件时，光靠环境变量也能配置——容器里就是这么跑的", async () => {
+  const root = createHome();
+  try {
+    await withHome(root, async () => {
+      delete require.cache[require.resolve("../src/context")];
+      const { createContext } = require("../src/context");
+      const ctx = createContext({ mirrorToConsole: false });
+      const result = await applyEnv(ctx, {
+        file: path.join(root, "不存在.env"),
+        env: { PTAGENT_WEB_HOST: "0.0.0.0", PTAGENT_WEB_TOKEN: "tok" }
+      });
+      assert.equal(result.applied, true);
+      const daemon = await ctx.config.readDaemon();
+      assert.equal(daemon.webHost, "0.0.0.0");
+      assert.equal(daemon.webToken, "tok");
+      await ctx.logger.flush();
+    });
+  } finally {
+    cleanup(root);
+  }
 });

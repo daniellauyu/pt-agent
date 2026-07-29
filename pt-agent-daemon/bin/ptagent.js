@@ -641,11 +641,17 @@ const commands = {
     const policy = await ctx.config.readPolicy();
     await check("数据目录", async () => ctx.paths.root);
     await check("配置来源", async () => {
-      const envFile = flags["no-env"] ? null : findEnvFile(ctx.paths.root);
-      if (!envFile) return `${ctx.paths.config}（没有 .env）`;
+      // 被环境托管的项在 WebUI 里改了会被下次启动覆盖，必须说清楚有多少、来自哪。
       const managed = ctx.envManaged?.managed || [];
-      // 由 .env 托管的项在 WebUI 里改了会被下次启动覆盖，必须说清楚是哪些。
-      return `${envFile} 托管 ${managed.length} 项，其余来自 ${ctx.paths.config}`;
+      if (!managed.length) return `${ctx.paths.config}（没有 .env，也没有 PTAGENT_* 环境变量）`;
+      const envFile = flags["no-env"] ? null : findEnvFile(ctx.paths.root);
+      const { processOverrides } = require("../src/env");
+      const fromProcess = Object.keys(processOverrides()).length;
+      const sources = [
+        envFile ? envFile : null,
+        fromProcess ? `${fromProcess} 个 PTAGENT_* 环境变量（优先级更高）` : null
+      ].filter(Boolean).join(" + ");
+      return `${sources} 托管 ${managed.length} 项，其余来自 ${ctx.paths.config}`;
     });
     await check("决策引擎", async () => {
       const { provenance } = require("../src/engines");

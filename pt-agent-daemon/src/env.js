@@ -169,16 +169,29 @@ const mapEnv = (env = {}) => {
   };
 };
 
-/**
- * 读取 .env 并写进配置。返回这次托管了哪些键，调用方负责告知用户。
- * 没有 .env 文件时什么都不做。
- */
-const applyEnv = async (ctx, { file = null } = {}) => {
-  const envFile = file || findEnvFile(ctx.paths.root);
-  if (!envFile) return { applied: false, file: null, managed: [] };
+// 真正的进程环境变量也算数，而且优先级高于 .env 文件。
+// Docker 的 -e、systemd 的 Environment= 都是这么传配置的；只认文件的话，
+// 镜像里设的 PTAGENT_WEB_HOST=0.0.0.0 会被无声忽略，端口映射了却连不上。
+const processOverrides = (env = process.env) => Object.fromEntries(
+  Object.entries(env).filter(([key, value]) => (
+    key.startsWith("PTAGENT_") &&
+    // 这两个决定「去哪里找配置」，不是配置本身，另有处理。
+    key !== "PTAGENT_HOME" && key !== "PTAGENT_ENV_FILE" &&
+    value !== undefined && value !== ""
+  ))
+);
 
-  const parsed = parseEnvFile(fs.readFileSync(envFile, "utf8"));
-  const patch = mapEnv(parsed);
+/**
+ * 把 .env 文件和进程环境变量合并后写进配置。
+ * 优先级：进程环境变量 > .env 文件 > config.json。
+ * 两者都没有 PTAGENT_* 时什么都不做。返回这次托管了哪些键，调用方负责告知用户。
+ */
+const applyEnv = async (ctx, { file = null, env = process.env } = {}) => {
+  const envFile = file || findEnvFile(ctx.paths.root);
+  const fromFile = envFile && fs.existsSync(envFile)
+    ? parseEnvFile(fs.readFileSync(envFile, "utf8"))
+    : {};
+  const patch = mapEnv({ ...fromFile, ...processOverrides(env) });
   if (!patch.managed.length) return { applied: false, file: envFile, managed: [] };
 
   if (Object.keys(patch.daemon).length) await ctx.config.saveDaemon(patch.daemon);
@@ -306,6 +319,6 @@ const toEnvFile = ({ daemon, policy, site, downloaders }, { includeSecrets = tru
 };
 
 module.exports = {
-  applyEnv, findEnvFile, mapEnv, parseEnvFile, toEnvFile,
+  applyEnv, findEnvFile, mapEnv, parseEnvFile, processOverrides, toEnvFile,
   DAEMON_KEYS, POLICY_KEYS, SITE_KEYS, DOWNLOADER_KEYS
 };

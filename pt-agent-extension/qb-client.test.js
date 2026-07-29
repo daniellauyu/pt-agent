@@ -10,6 +10,7 @@ const loadClient = () => {
   const context = vm.createContext({
     URL,
     URLSearchParams,
+    Headers,
     FormData,
     Blob,
     globalThis: null
@@ -42,6 +43,8 @@ test("logs in and sends a torrent URL with the Free deadline tag", async () => {
   });
 
   assert.equal(calls[0].url, "http://192.168.1.10:8080/api/v2/auth/login");
+  assert.equal(calls[0].options.headers.get("Origin"), "http://192.168.1.10:8080");
+  assert.equal(calls[0].options.headers.get("Referer"), "http://192.168.1.10:8080/");
   assert.equal(calls[1].url, "http://192.168.1.10:8080/api/v2/torrents/add");
   assert.equal(calls[1].options.body.get("urls"), "https://tracker.example/download/1");
   assert.equal(
@@ -341,12 +344,12 @@ test("reuses the session cookie instead of logging in for every operation", asyn
 test("logs in once and retries when the session has expired", async () => {
   const calls = [];
   let authed = false;
-  const fetchMock = async (url) => {
+  const fetchMock = async (url, options = {}) => {
     const path = new URL(url).pathname;
-    calls.push(path);
+    calls.push({ path, cookie: options.headers?.get?.("Cookie") || "" });
     if (path.endsWith("/auth/login")) {
       authed = true;
-      return new Response("Ok.");
+      return new Response("Ok.", { headers: { "set-cookie": "SID=test-session; HttpOnly; Path=/" } });
     }
     if (!authed) return new Response("Forbidden", { status: 403 });
     return new Response(JSON.stringify([]), { headers: { "content-type": "application/json" } });
@@ -356,7 +359,8 @@ test("logs in once and retries when the session has expired", async () => {
     fetchMock
   );
   assert.deepEqual(Array.from(await client.listTorrents("all")), []);
-  assert.equal(calls.filter((path) => path.endsWith("/auth/login")).length, 1);
+  assert.equal(calls.filter(({ path }) => path.endsWith("/auth/login")).length, 1);
+  assert.equal(calls.at(-1).cookie, "SID=test-session");
 });
 
 test("never retries the login when qBittorrent has banned the IP", async () => {

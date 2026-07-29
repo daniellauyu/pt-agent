@@ -34,9 +34,10 @@ ptagent start       # 前台跑守护进程
 
 ```bash
 cd pt-agent-daemon
-npm link            # 之后可以直接用 ptagent 命令
-# 或者不 link，直接 node bin/ptagent.js <命令>
+./install.sh        # 推荐：检查环境、建数据目录、装 ptagent 命令、跑一次体检
 ```
+
+不想用脚本就直接 `node bin/ptagent.js <命令>`，或者 `npm link` 之后用 `ptagent`。
 
 **单独部署到 NAS / 服务器**：整个 `pt-agent-daemon/` 目录拷过去即可，
 `vendor/engines/` 已经带上了全部决策逻辑。拷完先验一下：
@@ -183,7 +184,14 @@ ptagent config export-env .env            # 再生成便携配置
 
 不想让 `.env` 生效就加 `--no-env`。
 
-### 查找顺序
+### 优先级与查找顺序
+
+**进程环境变量 > `.env` 文件 > `config.json`**。
+
+Docker 的 `-e`、systemd 的 `Environment=` 传进来的 `PTAGENT_*` 会压过 `.env` 里的同名项，
+不需要重新打镜像就能改一个值。没有 `.env` 文件时，光靠环境变量也能完整配置——容器里就是这么跑的。
+
+`.env` 文件的查找顺序：
 
 1. `--env <文件>` 或环境变量 `PTAGENT_ENV_FILE`
 2. `$PTAGENT_HOME/.env`（默认 `~/.ptagent/.env`）
@@ -229,36 +237,16 @@ ptagent config set webToken $(openssl rand -hex 16)
 启动时会打印带 token 的完整地址。页面上永远看不到密码和 API Key——
 接口出站前一律脱敏，只回一个「填过没有」的标记。
 
-## 开机自启
+## 部署
 
-**systemd（Linux）** —— `/etc/systemd/system/ptagent.service`：
-
-```ini
-[Unit]
-Description=PT Agent Daemon
-After=network-online.target
-
-[Service]
-Type=simple
-User=你的用户名
-Environment=PTAGENT_HOME=/home/你的用户名/.ptagent
-ExecStart=/usr/bin/node /path/to/pt-agent-daemon/bin/ptagent.js start
-Restart=always
-RestartSec=30
-
-[Install]
-WantedBy=multi-user.target
-```
+完整的部署说明在 **[DEPLOY.md](DEPLOY.md)**：一键安装脚本、systemd / launchd 服务、
+Docker 与群晖、搬迁到另一台机器、以及跑起来之后怎么看。
 
 ```bash
-sudo systemctl enable --now ptagent
-journalctl -u ptagent -f
+./install.sh                     # 检查环境、建数据目录、装 ptagent 命令、体检
+./scripts/service.sh install     # 装成开机自启的后台服务
+docker compose up -d             # 或者用 Docker
 ```
-
-**launchd（macOS）** —— `~/Library/LaunchAgents/com.ptagent.daemon.plist`，
-`ProgramArguments` 填 `node /path/to/bin/ptagent.js start`，`RunAtLoad` 设 `true`。
-
-**Docker / 群晖** —— 挂载一个卷到 `/data`，设 `PTAGENT_HOME=/data`，命令 `node bin/ptagent.js start`。
 
 ## 排查
 
@@ -286,7 +274,7 @@ ptagent audit -n 30               # 什么被加了、什么被删了
 npm test
 ```
 
-82 个测试，其中 `scan-flow.test.js` 和 `guard.test.js` 用一个假网络
+100 个测试，其中 `scan-flow.test.js` 和 `guard.test.js` 用一个假网络
 （同时扮演 M-Team 和 qBittorrent）把完整链路真跑一遍——
 会出问题的从来不是单个函数，而是它们串起来的边界：会话过期、409 冲突、种子字节取不到时的降级。
 

@@ -1,6 +1,6 @@
 {
   "source": "pt-agent-extension",
-  "syncedAt": "2026-07-29T16:10:43.906Z",
+  "syncedAt": "2026-07-29T16:29:22.831Z",
   "note": "由 npm run sync-engines 生成，请勿手工编辑 vendor/engines/ 下的任何文件。",
   "modules": [
     "assessment-engine.js",
@@ -22,7 +22,7 @@
     "decision-engine.js": "ee7e3495f0f2a78701e7728e46c8460b706090025d01895006a785c56e32bd7b",
     "guard-engine.js": "d82785613ca81672278ff4803ceff559f060ac96b02579d5a412e458052bc6d7",
     "mteam-backfill.js": "7aeb989ae17f047bf97abd9e665d37c06e0e57ab98f466800b26951fbb15fdf9",
-    "qb-client.js": "ed4c4e4bc9850e9b3e9797d8aa412deddb46d5a65b24f7d380496332b90397e1",
+    "qb-client.js": "7be4e9cf0ff9d86d315b162f957c4c920867331ba49ddce271ee6004c33d0cc7",
     "downloader-registry.js": "b7f406e3161cfd24c78c0f265063ea9a16361a7988d5007b6d6d945cf02a64ef",
     "downloader-store.js": "a75fa53f150ee7abc833333556bd7581dcfde06690abf248c9d4be890a83acdf",
     "site-store.js": "a5f9fa3d5935c7606909080a5e231efb2c056586d686e44bf86558f3d2994c02",

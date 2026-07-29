@@ -110,8 +110,9 @@ ptagent push 12345 --json        # 推送指定种子 ID（必须在最近一次
 
 ## 配置从哪来
 
-优先级：`.env` > `config.json`。`.env` 里定义的项每次启动覆盖 `config.json` 的对应字段，
-没定义的照常可改。判断当前哪些项被托管：
+优先级：**进程环境变量 > `.env` 文件 > `config.json`**。
+前两者定义的项每次启动覆盖 `config.json` 的对应字段，没定义的照常可改。
+判断当前哪些项被托管：
 
 ```bash
 ptagent doctor --json    # checks[] 里「配置来源」一项会说明

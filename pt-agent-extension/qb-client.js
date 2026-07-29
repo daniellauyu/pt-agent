@@ -15,14 +15,19 @@ globalThis.PT_AGENT_QB = (() => {
     // qB 登录后会下发 SID Cookie，后续请求靠它维持会话。
     // 以前每个操作都先 login() 一次，等于自制登录风暴，密码一旦不对立刻触发封禁。
     // 现在改成：直接发请求，只有真的因为没有会话被拒时才登录一次并重试。
+    // 浏览器 fetch 会自动维护 Cookie，Node.js fetch 不会，所以这里同时保留服务端
+    // 返回的 SID；浏览器读不到 Set-Cookie，sessionCookie 会自然保持为空。
+    let sessionCookie = "";
 
     const request = async (path, options = {}, { allowAuthRetry = true } = {}) => {
       const method = options.method || "GET";
       const url = endpoint(settings, path);
+      const headers = new Headers(options.headers || {});
+      if (sessionCookie && path !== "auth/login") headers.set("Cookie", sessionCookie);
       onLog("qb:req", { method, path, url });
       let response;
       try {
-        response = await fetchImpl(url, { credentials: "include", ...options });
+        response = await fetchImpl(url, { credentials: "include", ...options, headers });
       } catch (error) {
         onLog("qb:req-error", { path, error: String(error?.message || error) });
         throw new Error(`qBittorrent 无法连接（${String(error?.message || error)}）`);
@@ -44,6 +49,7 @@ globalThis.PT_AGENT_QB = (() => {
       if (response.status === 403 && !isLoginCall && allowAuthRetry) {
         // 会话缺失或过期：登录一次再重试，且只重试一次，避免和封禁互相放大。
         onLog("qb:session-expired", { path });
+        sessionCookie = "";
         await login();
         return request(path, options, { allowAuthRetry: false });
       }
@@ -68,11 +74,20 @@ globalThis.PT_AGENT_QB = (() => {
       const body = new URLSearchParams();
       body.set("username", settings.username || "");
       body.set("password", settings.password || "");
+      const baseUrl = normalizeAddress(settings.address);
       const response = await request("auth/login", {
         method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+        // 浏览器会自动带 Origin / Referer，Node.js fetch 不会。qB 开启 CSRF
+        // 保护后会把缺少这两个头的远端登录直接拒绝为 403 Forbidden。
+        headers: {
+          "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+          "Origin": new URL(baseUrl).origin,
+          "Referer": baseUrl
+        },
         body
       });
+      const setCookie = response.headers.get("set-cookie");
+      if (setCookie) sessionCookie = setCookie.split(";", 1)[0];
       const result = (await response.text()).trim();
       if (response.status !== 204 && result !== "Ok.") {
         throw new Error(result === "Fails." ? "qBittorrent 账号或密码错误" : `qBittorrent 登录失败：${result || "未知错误"}`);

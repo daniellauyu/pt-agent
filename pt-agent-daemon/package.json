@@ -1,6 +1,6 @@
 {
   "name": "pt-agent-daemon",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "PT Agent 终端守护进程：定时扫描 Free 资源、只下载推荐项、Free 到期自动清理，附带与浏览器插件同款 WebUI。",
   "type": "commonjs",
   "private": true,
@@ -11,10 +11,20 @@
   "engines": {
     "node": ">=20.0.0"
   },
+  "files": [
+    "bin/",
+    "src/",
+    "vendor/",
+    "scripts/sync-engines.js",
+    "README.md",
+    "AGENTS.md"
+  ],
   "scripts": {
     "start": "node bin/ptagent.js start",
     "test": "node --test \"test/*.test.js\"",
-    "doctor": "node bin/ptagent.js doctor"
+    "doctor": "node bin/ptagent.js doctor",
+    "sync-engines": "node scripts/sync-engines.js",
+    "check-engines": "node scripts/sync-engines.js --check"
   },
   "dependencies": {},
   "license": "MIT"

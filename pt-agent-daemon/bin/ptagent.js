@@ -526,6 +526,16 @@ const commands = {
     const daemon = await ctx.config.readDaemon();
     const policy = await ctx.config.readPolicy();
     await check("数据目录", async () => ctx.paths.root);
+    await check("决策引擎", async () => {
+      const { provenance } = require("../src/engines");
+      const info = provenance();
+      if (!info) throw new Error("vendor/engines/MANIFEST.json 缺失或损坏，执行 npm run sync-engines");
+      // 顺带报一下有没有跑偏：完整仓库里能比对插件源文件，单独发布的副本只校验自身完整性。
+      const { check: checkVendor } = require("../scripts/sync-engines");
+      const result = checkVendor();
+      if (!result.ok) throw new Error(result.problems.join("；"));
+      return `${info.moduleCount} 个模块，同步自 ${info.source}（${info.syncedAt.slice(0, 10)}）`;
+    });
     await check("调度参数", async () => {
       if (daemon.scanIntervalMinMinutes > daemon.scanIntervalMaxMinutes) throw new Error("最短间隔大于最长间隔");
       return `${daemon.scanIntervalMinMinutes}–${daemon.scanIntervalMaxMinutes} 分钟，自动下载${daemon.autoDownload ? "开启" : "关闭"}`;

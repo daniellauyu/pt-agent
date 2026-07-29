@@ -26,6 +26,7 @@ ptagent start       # 前台跑守护进程
 | 种子文件抓取 | 受同源策略限制，CDN 302 后常拿不到字节，只能退化成让下载器自己抓 | 无同源策略，永远能拿到字节再上传，成功率更高 |
 | Free 到期删除 | 默认关闭 | 默认开启 |
 | 配置存储 | `chrome.storage.local` | `~/.ptagent/config.json` |
+| 决策逻辑 | 源头 | `vendor/engines/` 里的逐字节副本 |
 
 ## 安装
 
@@ -35,6 +36,14 @@ ptagent start       # 前台跑守护进程
 cd pt-agent-daemon
 npm link            # 之后可以直接用 ptagent 命令
 # 或者不 link，直接 node bin/ptagent.js <命令>
+```
+
+**单独部署到 NAS / 服务器**：整个 `pt-agent-daemon/` 目录拷过去即可，
+`vendor/engines/` 已经带上了全部决策逻辑。拷完先验一下：
+
+```bash
+node scripts/sync-engines.js --check
+node bin/ptagent.js doctor
 ```
 
 ## 五分钟跑起来
@@ -201,7 +210,7 @@ journalctl -u ptagent -f
 出问题先看这三条：
 
 ```bash
-ptagent doctor                    # 配置和连通性
+ptagent doctor                    # 配置、决策引擎完整性、连通性
 ptagent logs --level error -n 50  # 只看错误
 ptagent audit -n 30               # 什么被加了、什么被删了
 ```
@@ -222,6 +231,10 @@ ptagent audit -n 30               # 什么被加了、什么被删了
 npm test
 ```
 
-60 个测试，其中 `scan-flow.test.js` 和 `guard.test.js` 用一个假网络
+68 个测试，其中 `scan-flow.test.js` 和 `guard.test.js` 用一个假网络
 （同时扮演 M-Team 和 qBittorrent）把完整链路真跑一遍——
 会出问题的从来不是单个函数，而是它们串起来的边界：会话过期、409 冲突、种子字节取不到时的降级。
+
+`vendor-sync.test.js` 另外锁住了「能单独发布」这件事本身：
+除了校验副本一致性，还会扫描 `src/` 和 `bin/`，确认没有任何一处又引用回 `pt-agent-extension` 目录——
+这种引用一旦漏网，只有在单独部署后运行时才会炸出来。

@@ -35,7 +35,8 @@ ptagent audit -n 30 --json                   # 什么被加了、什么被删了
 ```
 
 `doctor` 的 `checks[]` 每项是 `{ label, ok, detail }`，`ok` 为整体结论。
-退出码非 0 就是有检查没过。
+退出码非 0 就是有检查没过。其中「决策引擎」一项会报出 `vendor/engines/` 的同步来源和日期——
+要确认跑的是哪一版判定规则，看这里。
 
 ## 日志
 
@@ -109,9 +110,12 @@ ptagent push 12345 --json        # 推送指定种子 ID（必须在最近一次
 
 ## 改代码时要知道的
 
-- **决策逻辑不在这个子项目里**。评分、决策、准入、Free 保护、qBittorrent 客户端都在
-  `../pt-agent-extension/`，由 `src/engines.js` 加载。要改判定规则就去改那边，
-  两个子项目共享同一份，改完两边一起生效。
+- **决策逻辑不要在这个子项目里改**。评分、决策、准入、Free 保护、qBittorrent 客户端位于
+  `vendor/engines/`，是 `../pt-agent-extension/` 的逐字节副本。
+  要改判定规则：改插件那边的源文件，然后 `npm run sync-engines`。
+  直接改 `vendor/` 会被 `vendor-sync.test.js` 拦下（MANIFEST 记了每个文件的 sha256）。
+- **不要在 `src/` 或 `bin/` 里引用 `pt-agent-extension`**。这个子项目要能单独发布，
+  有一处引用就会让独立部署在运行时炸掉；`vendor-sync.test.js` 里有专门的扫描测试挡这件事。
 - 加了任何行为改动，跑 `npm test`。`test/helpers.js` 提供的假网络同时扮演 M-Team 和
   qBittorrent，新场景往那里加分支即可，不需要打桩内部函数。
 - 提交遵循仓库约定：`vX.Y.Z:中文说明`。

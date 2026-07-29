@@ -1,0 +1,33 @@
+{
+  "source": "pt-agent-extension",
+  "syncedAt": "2026-07-29T16:10:43.906Z",
+  "note": "由 npm run sync-engines 生成，请勿手工编辑 vendor/engines/ 下的任何文件。",
+  "modules": [
+    "assessment-engine.js",
+    "admission-engine.js",
+    "decision-engine.js",
+    "guard-engine.js",
+    "mteam-backfill.js",
+    "qb-client.js",
+    "downloader-registry.js",
+    "downloader-store.js",
+    "site-store.js",
+    "network-router.js",
+    "exclusion-store.js",
+    "torrent-links.js"
+  ],
+  "files": {
+    "assessment-engine.js": "4e6db3d1e2bcabdfda44d645b31b20a5678e77562099e015170c82b2d30cd986",
+    "admission-engine.js": "6d304458690cedf897aef08969ff404d2702d2d3360f3c0210b337afae7f288a",
+    "decision-engine.js": "ee7e3495f0f2a78701e7728e46c8460b706090025d01895006a785c56e32bd7b",
+    "guard-engine.js": "d82785613ca81672278ff4803ceff559f060ac96b02579d5a412e458052bc6d7",
+    "mteam-backfill.js": "7aeb989ae17f047bf97abd9e665d37c06e0e57ab98f466800b26951fbb15fdf9",
+    "qb-client.js": "ed4c4e4bc9850e9b3e9797d8aa412deddb46d5a65b24f7d380496332b90397e1",
+    "downloader-registry.js": "b7f406e3161cfd24c78c0f265063ea9a16361a7988d5007b6d6d945cf02a64ef",
+    "downloader-store.js": "a75fa53f150ee7abc833333556bd7581dcfde06690abf248c9d4be890a83acdf",
+    "site-store.js": "a5f9fa3d5935c7606909080a5e231efb2c056586d686e44bf86558f3d2994c02",
+    "network-router.js": "65ed56409839a8c80d7593f56b1c4042b74b3fb00801d366b6f46ac537c31375",
+    "exclusion-store.js": "6a37055acd0ed58acf18b7469e907295c0a277adda2dab825d63356098b0301d",
+    "torrent-links.js": "f4f638cf98efadd13d056b208ece38345046c2e179406c4790f6656d6f5a7fea"
+  }
+}

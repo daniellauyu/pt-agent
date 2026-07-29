@@ -15,6 +15,12 @@ pt-core-service/.pytest_cache/
 pt-core-service/**/__pycache__/
 *.py[cod]
 
+# 守护进程的本地配置：里面有下载器密码和站点 API Key。
+# .env.example 是不含密钥的模板，那个要提交。
+pt-agent-daemon/.env
+pt-agent-daemon/*.env
+!pt-agent-daemon/.env.example
+
 # Node 依赖（守护进程本身零依赖，这里只挡 npm link 产生的目录）。
 pt-agent-daemon/node_modules/
 pt-agent-daemon/package-lock.json

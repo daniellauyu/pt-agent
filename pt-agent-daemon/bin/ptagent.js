@@ -29,6 +29,8 @@ const HELP = `PT Agent 守护进程
 配置
   config list                打印全部配置
   config set <键> <值>       修改调度或策略配置，如 config set scanIntervalMinMinutes 30
+  config export-env [文件]   把当前配置导出成 .env，用于搬到另一台机器
+  import <文件.json>         导入浏览器插件「导出配置」生成的 JSON
   downloader list|add|rm|test
   site list|add|rm
   doctor                     体检：配置完整性、站点与下载器连通性
@@ -36,6 +38,8 @@ const HELP = `PT Agent 守护进程
 通用参数
   --json                     输出 JSON（供 agent 消费）
   --home <目录>              指定数据目录（默认 ~/.ptagent，也可用 PTAGENT_HOME）
+  --env <文件>               指定 .env（默认依次找 $PTAGENT_HOME/.env、./.env、项目根目录）
+  --no-env                   本次忽略 .env
   --quiet                    不把日志镜像到终端
   -h, --help                 显示本帮助
 `;
@@ -52,7 +56,7 @@ const parseArgs = (argv) => {
     const name = token.replace(/^--?/, "");
     const next = argv[index + 1];
     // 布尔开关和带值参数在这里区分：下一个 token 以 - 开头就当成布尔。
-    if (["json", "quiet", "dry-run", "force", "help", "h", "yes", "new"].includes(name)) {
+    if (["json", "quiet", "dry-run", "force", "help", "h", "yes", "new", "no-env", "no-secrets"].includes(name)) {
       flags[name] = true;
     } else if (next !== undefined && !next.startsWith("--")) {
       flags[name] = next;
@@ -73,13 +77,34 @@ if (flags.help || flags.h || !command || command === "help") {
 }
 
 if (flags.home) process.env.PTAGENT_HOME = String(flags.home);
+if (flags.env) process.env.PTAGENT_ENV_FILE = String(flags.env);
 
+// 先解决「数据目录写在 .env 里」这个先有鸡还是先有蛋的问题：
+// 找 .env 需要知道数据目录，而数据目录本身可能就定义在 .env 里。
+// 所以这里只用不依赖数据目录的那几个位置先探一次，拿到 PTAGENT_HOME 就够了。
+if (!process.env.PTAGENT_HOME && !flags["no-env"]) {
+  const fs = require("node:fs");
+  const nodePath = require("node:path");
+  const { parseEnvFile } = require("../src/env");
+  const early = [
+    process.env.PTAGENT_ENV_FILE,
+    nodePath.join(process.cwd(), ".env"),
+    nodePath.resolve(__dirname, "..", ".env")
+  ].filter(Boolean).find((file) => fs.existsSync(file));
+  if (early) {
+    const home = parseEnvFile(fs.readFileSync(early, "utf8")).PTAGENT_HOME;
+    if (home) process.env.PTAGENT_HOME = home.replace(/^~(?=\/|$)/, require("node:os").homedir());
+  }
+}
+
+const fsSync = require("node:fs");
 const { createContext } = require("../src/context");
 const { runScan, pushSelected } = require("../src/runner");
 const { runGuard, backfillDeadlines } = require("../src/guard");
 const { createScheduler } = require("../src/scheduler");
 const { createServer, isLoopback } = require("../src/webui/server");
 const { DEFAULT_DAEMON, DEFAULT_POLICY } = require("../src/config");
+const { applyEnv, findEnvFile, toEnvFile } = require("../src/env");
 
 const asJson = Boolean(flags.json);
 const out = (text) => process.stdout.write(`${text}\n`);
@@ -373,7 +398,27 @@ const commands = {
       });
       return;
     }
-    if (action !== "set") throw new Error("用法：ptagent config list 或 ptagent config set <键> <值>");
+    if (action === "export-env") {
+      const { policy, daemon } = await ctx.config.readAll();
+      const text = toEnvFile({
+        daemon,
+        policy,
+        // 用 activeSite（优先挑真的填了 Key 的那条），不能用 sites.active()——
+        // 后者取第一条启用的，会挑中初始化时那条空的 M-Team 占位记录，导出一个没有 Key 的 .env。
+        site: await ctx.activeSite().catch(() => ctx.sites.active()),
+        downloaders: await ctx.downloaders.list()
+      }, { includeSecrets: flags["no-secrets"] !== true });
+      const target = key || values[0];
+      if (target) {
+        fsSync.writeFileSync(target, text, { mode: 0o600 });
+        out(`已导出到 ${target}（权限 600）。`);
+        out("这个文件里有密码和 API Key，拷贝到另一台机器后放在数据目录或运行目录下即可。");
+        return;
+      }
+      process.stdout.write(text);
+      return;
+    }
+    if (action !== "set") throw new Error("用法：ptagent config list / set <键> <值> / export-env [文件]");
     if (!key) throw new Error("缺少配置键名");
 
     const raw = values.join(" ");
@@ -387,13 +432,33 @@ const commands = {
       return raw;
     };
 
+    // 被 .env 托管的键，在这里改了下次启动就会被 .env 覆盖回去——必须当场说清楚。
+    const envManagedFields = new Set();
+    if (ctx.envManaged) {
+      const { DAEMON_KEYS, POLICY_KEYS } = require("../src/env");
+      [...DAEMON_KEYS, ...POLICY_KEYS]
+        .filter(([envKey]) => ctx.envManaged.managed.includes(envKey))
+        .forEach(([envKey, field]) => envManagedFields.add(`${field}\u0000${envKey}`));
+    }
+    const envKeyFor = (field) => [...envManagedFields]
+      .map((entry) => entry.split("\u0000"))
+      .find(([name]) => name === field)?.[1];
+
     if (key in DEFAULT_DAEMON) {
       const next = await ctx.config.saveDaemon({ [key]: coerce(DEFAULT_DAEMON[key]) });
+      const owner = envKeyFor(key);
+      if (owner && !asJson) {
+        out(`⚠ ${key} 由 .env 的 ${owner} 托管，下次启动会被覆盖回去。要永久改请改 .env。`);
+      }
       emit({ scope: "daemon", key, value: next[key] }, (data) => out(`已设置 ${data.key} = ${data.value}`));
       return;
     }
     if (key in DEFAULT_POLICY) {
       const next = await ctx.config.savePolicy({ [key]: coerce(DEFAULT_POLICY[key]) });
+      const owner = envKeyFor(key);
+      if (owner && !asJson) {
+        out(`⚠ ${key} 由 .env 的 ${owner} 托管，下次启动会被覆盖回去。要永久改请改 .env。`);
+      }
       emit({ scope: "policy", key, value: next[key] }, (data) => out(`已设置 ${data.key} = ${data.value}`));
       return;
     }
@@ -513,6 +578,55 @@ const commands = {
     throw new Error("用法：ptagent site list|add|set|rm");
   },
 
+  // 导入浏览器插件「导出配置」生成的 JSON，把插件那边调好的配置整体搬过来。
+  async import(ctx) {
+    const file = rest[0];
+    if (!file) throw new Error("用法：ptagent import <插件导出的.json>");
+    const payload = JSON.parse(fsSync.readFileSync(file, "utf8"));
+    const applied = { downloaders: 0, sites: 0, policy: false, exclusions: 0 };
+
+    const downloaders = payload.ptAgentDownloaders || payload.downloaders;
+    if (Array.isArray(downloaders) && downloaders.length) {
+      await ctx.downloaders.save(downloaders);
+      applied.downloaders = downloaders.length;
+    }
+    const sites = payload.ptAgentSites || payload.sites;
+    if (Array.isArray(sites) && sites.length) {
+      await ctx.sites.save(sites);
+      applied.sites = sites.length;
+    }
+    const settings = payload.ptAgentSettings || payload.settings;
+    if (settings && typeof settings === "object") {
+      // 插件的 guardExecutor 是 "extension"，导进来必须改成 daemon，否则保护不会执行。
+      await ctx.config.savePolicy({ ...settings, guardExecutor: "daemon" });
+      applied.policy = true;
+    }
+    const exclusions = payload.ptAgentExcludedTorrents || payload.exclusions;
+    if (Array.isArray(exclusions) && exclusions.length) {
+      await ctx.storage.set({ ptAgentExcludedTorrents: exclusions });
+      applied.exclusions = exclusions.length;
+    }
+    const links = payload.ptAgentTorrentLinks || payload.torrentLinks;
+    if (Array.isArray(links) && links.length) await ctx.storage.set({ ptAgentTorrentLinks: links });
+
+    // 插件的老版单下载器配置里带着 M-Team API Key，站点列表为空时用它兜底。
+    const legacy = payload.ptAgentQbSettings;
+    if (legacy?.mteamApiKey && !applied.sites) {
+      await ctx.sites.upsert({
+        id: "site_mteam", name: "M-Team", type: "mteam",
+        siteUrl: "https://kp.m-team.cc/", apiUrl: "https://api.m-team.cc/",
+        apiKey: legacy.mteamApiKey, enabled: true
+      });
+      applied.sites = 1;
+    }
+
+    emit(applied, (data) => {
+      out(`已导入：下载器 ${data.downloaders} 台，站点 ${data.sites} 个，` +
+        `下载策略${data.policy ? "已覆盖" : "未提供"}，排除记录 ${data.exclusions} 条。`);
+      out("接着跑 ptagent doctor 确认连通性，再用 ptagent config export-env .env 生成便携配置。");
+    });
+  },
+
   async doctor(ctx) {
     const checks = [];
     const check = async (label, task) => {
@@ -526,6 +640,13 @@ const commands = {
     const daemon = await ctx.config.readDaemon();
     const policy = await ctx.config.readPolicy();
     await check("数据目录", async () => ctx.paths.root);
+    await check("配置来源", async () => {
+      const envFile = flags["no-env"] ? null : findEnvFile(ctx.paths.root);
+      if (!envFile) return `${ctx.paths.config}（没有 .env）`;
+      const managed = ctx.envManaged?.managed || [];
+      // 由 .env 托管的项在 WebUI 里改了会被下次启动覆盖，必须说清楚是哪些。
+      return `${envFile} 托管 ${managed.length} 项，其余来自 ${ctx.paths.config}`;
+    });
     await check("决策引擎", async () => {
       const { provenance } = require("../src/engines");
       const info = provenance();
@@ -584,6 +705,28 @@ const main = async () => {
     process.exit(1);
   }
   const ctx = makeContext({ mirror: ["start", "web"].includes(command) });
+
+  // .env 在任何命令读配置之前生效：写在里面的项以它为准，覆盖 config.json。
+  // config list 也要走这一步，否则用户看到的和实际跑的不是一回事。
+  if (!flags["no-env"]) {
+    const applied = await applyEnv(ctx);
+    if (applied.applied) {
+      ctx.envManaged = applied;
+      ctx.logger.info("config:env-applied", {
+        file: applied.file,
+        keys: applied.managed.length,
+        downloaders: applied.downloaderCount || 0
+      });
+      if (applied.droppedDownloaders?.length || applied.droppedSites?.length) {
+        ctx.logger.warn("config:env-replaced-lists", {
+          downloaders: applied.droppedDownloaders || [],
+          sites: applied.droppedSites || [],
+          hint: ".env 一旦定义了下载器或站点就会整份接管对应列表；这些不在 .env 里的记录已被顶掉"
+        });
+      }
+    }
+  }
+
   await handler(ctx);
   await ctx.logger.flush();
 };

@@ -108,6 +108,21 @@ ptagent push 12345 --json        # 推送指定种子 ID（必须在最近一次
 
 密码、API Key、访问令牌在所有接口出站前一律脱敏，只会返回 `hasPassword` / `hasApiKey` / `hasWebToken`。
 
+## 配置从哪来
+
+优先级：`.env` > `config.json`。`.env` 里定义的项每次启动覆盖 `config.json` 的对应字段，
+没定义的照常可改。判断当前哪些项被托管：
+
+```bash
+ptagent doctor --json    # checks[] 里「配置来源」一项会说明
+```
+
+日志里的 `config:env-applied` 记录了本次托管的键数量，
+`config:env-replaced-lists` 记录了因 `.env` 定义了下载器/站点而被顶掉的旧记录。
+
+**改配置时要注意**：如果目标键由 `.env` 托管，`ptagent config set` 只在本次运行有效，
+下次启动会被覆盖回去（CLI 会当场警告）。要永久改，改 `.env`。
+
 ## 改代码时要知道的
 
 - **决策逻辑不要在这个子项目里改**。评分、决策、准入、Free 保护、qBittorrent 客户端位于

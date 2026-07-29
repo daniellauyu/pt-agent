@@ -296,6 +296,15 @@ const setPolicyMessage = (message, type = "") => {
   node.className = `downloader-message ${type}`.trim();
 };
 
+// 和其它提示一样：错误必须同时进日志，只弹在界面上等于没人看得见。
+const setMigrationMessage = (message, type = "") => {
+  if (type === "error") reportUiError("migration", message);
+  const node = $("migrationMessage");
+  if (!node) return;
+  node.textContent = message;
+  node.className = `downloader-message ${type}`.trim();
+};
+
 const readPolicySettingsForm = () => ({
   // 这里只做输入合法性兜底（避免 0 并发、负体积），不是策略上限。
   maxActiveDownloads: clampNumber($("policyMaxActiveDownloads").value, { min: 1, max: 200, fallback: 3 }),
@@ -2140,6 +2149,41 @@ const exportAuditJson = () => {
   URL.revokeObjectURL(url);
 };
 
+// 导出全部配置，供终端守护进程 ptagent import 使用。
+// 只导配置，不导日志、审计和运行期缓存——那些换台机器没有意义。
+const exportConfigJson = async () => {
+  try {
+    const keys = [
+      "ptAgentDownloaders",
+      "ptAgentSites",
+      "ptAgentSettings",
+      "ptAgentExcludedTorrents",
+      "ptAgentTorrentLinks",
+      "ptAgentQbSettings"
+    ];
+    const stored = await chrome.storage.local.get(keys);
+    const payload = {
+      exportedAt: new Date().toISOString(),
+      exportedBy: `pt-agent-extension ${chrome.runtime.getManifest().version}`,
+      ...Object.fromEntries(keys.filter((key) => stored[key] !== undefined).map((key) => [key, stored[key]]))
+    };
+    const blob = new Blob([JSON.stringify(payload, null, 2)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = `pt-agent-config-${Date.now()}.json`;
+    a.click();
+    URL.revokeObjectURL(url);
+    setMigrationMessage(
+      `已导出 ${keys.filter((key) => stored[key] !== undefined).length} 组配置。` +
+      `在守护进程那边执行 ptagent import <文件> 导入。注意文件里有密码和 API Key。`,
+      "success"
+    );
+  } catch (error) {
+    setMigrationMessage(error.message || String(error), "error");
+  }
+};
+
 const applyTheme = (theme) => {
   const resolved = theme === "light" ? "light" : "dark";
   document.documentElement.dataset.theme = resolved;
@@ -2205,6 +2249,7 @@ document.addEventListener("DOMContentLoaded", async () => {
   $("copyBtn").addEventListener("click", copyJson);
   $("downloadBtn").addEventListener("click", downloadJson);
   $("exportAuditBtn").addEventListener("click", exportAuditJson);
+  $("exportConfigBtn").addEventListener("click", exportConfigJson);
   $("refreshLogsBtn").addEventListener("click", renderLogs);
   $("exportLogsBtn").addEventListener("click", exportLogs);
   $("clearLogsBtn").addEventListener("click", clearLogs);

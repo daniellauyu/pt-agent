@@ -39,8 +39,24 @@ test("keeps the toolbar popup as the compact mode", () => {
   assert.equal(manifest.action.default_popup, "popup.html");
 });
 
-test("publishes the complete error-capture update as version 0.19.0", () => {
-  assert.equal(manifest.version, "0.19.0");
+// 之前这里写死了版本号，每次发版都要改一次，而它并不能证明任何事——
+// 断言的值就是从同一个文件读出来的。改成校验格式，真正的功能由下面的用例覆盖。
+test("declares a well-formed version", () => {
+  assert.match(manifest.version, /^\d+\.\d+\.\d+$/);
+});
+
+test("lets the user export every setting for the terminal daemon", () => {
+  const popup = fs.readFileSync(path.join(__dirname, "popup.js"), "utf8");
+  const html = fs.readFileSync(path.join(__dirname, "popup.html"), "utf8");
+  assert.match(html, /id="exportConfigBtn"/);
+  assert.match(popup, /exportConfigBtn.*addEventListener/s);
+  // 导出的必须是配置，不能顺手把日志和审计也带出去——那些换台机器毫无意义，
+  // 却会让一个本来就含密钥的文件更大更敏感。
+  const exportBlock = popup.slice(popup.indexOf("const exportConfigJson"), popup.indexOf("const applyTheme"));
+  ["ptAgentDownloaders", "ptAgentSites", "ptAgentSettings", "ptAgentExcludedTorrents"]
+    .forEach((key) => assert.match(exportBlock, new RegExp(key), `导出缺少 ${key}`));
+  ["ptAgentDebugLog", "ptAgentAuditLog"]
+    .forEach((key) => assert.doesNotMatch(exportBlock, new RegExp(key), `导出不该包含 ${key}`));
 });
 
 test("captures uncaught errors in both the popup and the service worker", () => {

@@ -148,19 +148,74 @@ ptagent start
 
 已经在下载器里但缺截止标签的老任务，用 `ptagent backfill` 回查补上——补上后它们才受保护。
 
+## 用 .env 搬到另一台机器
+
+配置调好以后，把整份配置装进一个 `.env` 文件带走：
+
+```bash
+ptagent config export-env .env      # 导出（含密码，权限自动设 600）
+```
+
+把这个 `.env` 拷到新机器的 `~/.ptagent/.env` 或运行目录下，`ptagent doctor` 应该直接全绿。
+
+**从浏览器插件搬过来**：插件的「设置 → 配置迁移 → 导出配置 JSON」会把下载器、站点、
+下载策略和排除记录一并导出，然后：
+
+```bash
+ptagent import pt-agent-config-xxx.json   # 整体导入
+ptagent doctor                            # 验一下
+ptagent config export-env .env            # 再生成便携配置
+```
+
+### 规则：写在 .env 里的以 .env 为准
+
+`.env` 里定义的项**每次启动都会覆盖 `config.json` 里的对应字段**。没写进 `.env` 的字段
+不受影响，照常可以在 WebUI 里改。
+
+这条规则必须记住，否则会遇到「在 WebUI 改了、重启后被改回去」这种查不出原因的怪事。
+所以：
+
+- `ptagent doctor` 的「配置来源」一项会告诉你 `.env` 当前托管了多少项
+- `ptagent config set` 改到被托管的键时，会当场警告下次启动会被覆盖
+- **`.env` 里只要写了下载器或站点，就会整份接管对应的列表**（不做合并）——
+  列表顺序就是探测优先级，两个来源混在一起以后光看 `.env` 说不清实际会先连哪一台。
+  被顶掉的记录会记进日志（`config:env-replaced-lists`），不是静默丢弃。
+
+不想让 `.env` 生效就加 `--no-env`。
+
+### 查找顺序
+
+1. `--env <文件>` 或环境变量 `PTAGENT_ENV_FILE`
+2. `$PTAGENT_HOME/.env`（默认 `~/.ptagent/.env`）
+3. 运行目录下的 `.env`
+4. 项目根目录的 `.env`
+
+`.env.example` 是不含密钥的完整模板，复制一份改成 `.env` 即可。
+`PTAGENT_HOME` 这一项只有写在第 1、3、4 处才有意义——要先知道数据目录才能找到数据目录里的 `.env`。
+
+值里有空格或 `#` 时用引号包起来（密码里带 `#` 很常见）：
+
+```
+PTAGENT_DOWNLOADER_1_PASSWORD="pa ss#word"
+```
+
+导出时会自动加引号，往返不会变样。
+
 ## 数据目录
 
 默认 `~/.ptagent/`，可用 `--home` 或环境变量 `PTAGENT_HOME` 改。
 
 ```
 ~/.ptagent/
+├── .env                  # 可选。写在这里的项每次启动覆盖 config.json
 ├── config.json           # 全部配置：策略、调度、下载器、站点、排除表
 └── logs/
     ├── runtime.jsonl     # 运行日志，一行一条 JSON
     └── audit.jsonl       # 生命周期审计
 ```
 
-`config.json` 里存着下载器密码和站点 API Key。请自行确认它的文件权限。
+`.env` 和 `config.json` 里都存着下载器密码和站点 API Key。
+`export-env` 生成的文件权限是 600，仓库的 `.gitignore` 也挡掉了 `.env`。
 
 ## WebUI
 
@@ -231,10 +286,14 @@ ptagent audit -n 30               # 什么被加了、什么被删了
 npm test
 ```
 
-68 个测试，其中 `scan-flow.test.js` 和 `guard.test.js` 用一个假网络
+82 个测试，其中 `scan-flow.test.js` 和 `guard.test.js` 用一个假网络
 （同时扮演 M-Team 和 qBittorrent）把完整链路真跑一遍——
 会出问题的从来不是单个函数，而是它们串起来的边界：会话过期、409 冲突、种子字节取不到时的降级。
 
 `vendor-sync.test.js` 另外锁住了「能单独发布」这件事本身：
 除了校验副本一致性，还会扫描 `src/` 和 `bin/`，确认没有任何一处又引用回 `pt-agent-extension` 目录——
 这种引用一旦漏网，只有在单独部署后运行时才会炸出来。
+
+`env.test.js` 专门锁住往返一致性：一份配置导出成 `.env` 再读回来，
+每个值——包括带空格和 `#` 的密码——都必须和原来一模一样。
+搬到另一台机器后某个值悄悄变了样，是这套流程最难查的失败。

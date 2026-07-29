@@ -15,7 +15,6 @@ globalThis.PT_AGENT_QB = (() => {
     // qB 登录后会下发 SID Cookie，后续请求靠它维持会话。
     // 以前每个操作都先 login() 一次，等于自制登录风暴，密码一旦不对立刻触发封禁。
     // 现在改成：直接发请求，只有真的因为没有会话被拒时才登录一次并重试。
-    let sessionReady = false;
 
     const request = async (path, options = {}, { allowAuthRetry = true } = {}) => {
       const method = options.method || "GET";
@@ -29,17 +28,13 @@ globalThis.PT_AGENT_QB = (() => {
         throw new Error(`qBittorrent 无法连接（${String(error?.message || error)}）`);
       }
       onLog("qb:res", { path, status: response.status, ok: response.ok });
-      if (response.ok) {
-        if (path === "auth/login") sessionReady = true;
-        return response;
-      }
+      if (response.ok) return response;
 
       // 响应体只能读一次，这里统一读出来供后续所有判断复用。
       const detail = (await response.text()).trim();
       const isLoginCall = path === "auth/login";
 
       if (response.status === 403 && isBanMessage(detail)) {
-        sessionReady = false;
         const banError = new Error(`qBittorrent 已封禁当前 IP：${detail}`);
         banError.code = "QB_IP_BANNED";
         onLog("qb:banned", { path, detail: detail.slice(0, 300) });
@@ -49,7 +44,6 @@ globalThis.PT_AGENT_QB = (() => {
       if (response.status === 403 && !isLoginCall && allowAuthRetry) {
         // 会话缺失或过期：登录一次再重试，且只重试一次，避免和封禁互相放大。
         onLog("qb:session-expired", { path });
-        sessionReady = false;
         await login();
         return request(path, options, { allowAuthRetry: false });
       }
@@ -149,19 +143,35 @@ globalThis.PT_AGENT_QB = (() => {
       return response.json();
     };
 
+    // 「确保分类存在」是幂等意图的操作，任何一步失败都不该阻断真正要做的事（入队）。
     const ensureCategory = async (category, savePath = "") => {
       if (!category) return false;
-      const categories = await listCategories();
-      if (categories?.[category]) return true;
+      try {
+        const categories = await listCategories();
+        if (categories && typeof categories === "object" && categories[category]) return true;
+      } catch (error) {
+        // 读不到分类列表就直接尝试创建，让下面的 409 兜底判定处理。
+        onLog("qb:categories-unavailable", { error: String(error?.message || error) });
+      }
       const body = new URLSearchParams();
       body.set("category", category);
       if (savePath) body.set("savePath", savePath);
-      await request("torrents/createCategory", {
-        method: "POST",
-        headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
-        body
-      });
-      return true;
+      try {
+        await request("torrents/createCategory", {
+          method: "POST",
+          headers: { "Content-Type": "application/x-www-form-urlencoded;charset=UTF-8" },
+          body
+        });
+        return true;
+      } catch (error) {
+        // qB 在分类已存在时对 createCategory 返回 409 Conflict。
+        // 这正是我们想要的状态，绝不能当成入队失败——否则种子根本不会被提交。
+        if (/\b409\b/.test(String(error?.message || ""))) {
+          onLog("qb:category-exists", { category });
+          return true;
+        }
+        throw error;
+      }
     };
 
     const addTags = async (hashes, tags) => {

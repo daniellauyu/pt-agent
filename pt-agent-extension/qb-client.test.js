@@ -460,3 +460,70 @@ test("fails a JSON add response that reports only failures", async () => {
   );
   await assert.rejects(() => client.addTorrent({ url: "https://tracker/1" }), /添加失败/);
 });
+
+test("treats a 409 from createCategory as the category already existing", async () => {
+  const calls = [];
+  const fetchMock = async (url) => {
+    const path = new URL(url).pathname;
+    calls.push(path);
+    // 分类列表看起来没有 PT_AGENT，但创建时 qB 说已存在（并发或代理导致的不一致）
+    if (path.endsWith("/torrents/categories")) {
+      return new Response("{}", { headers: { "content-type": "application/json" } });
+    }
+    if (path.endsWith("/torrents/createCategory")) return new Response("Conflict", { status: 409 });
+    return new Response("Ok.");
+  };
+  const client = loadClient().createClient(
+    { address: "http://qb.local/", username: "a", password: "b" },
+    fetchMock
+  );
+  // 必须返回 true，否则 409 会中断整次入队，种子根本不会被提交
+  assert.equal(await client.ensureCategory("PT_AGENT"), true);
+});
+
+test("still creates the category when it genuinely does not exist", async () => {
+  const calls = [];
+  const fetchMock = async (url) => {
+    const path = new URL(url).pathname;
+    calls.push(path);
+    if (path.endsWith("/torrents/categories")) {
+      return new Response("{}", { headers: { "content-type": "application/json" } });
+    }
+    return new Response("Ok.");
+  };
+  const client = loadClient().createClient(
+    { address: "http://qb.local/", username: "a", password: "b" },
+    fetchMock
+  );
+  assert.equal(await client.ensureCategory("PT_AGENT"), true);
+  assert.ok(calls.some((path) => path.endsWith("/torrents/createCategory")));
+});
+
+test("does not let an unreadable category list block the enqueue", async () => {
+  const fetchMock = async (url) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/torrents/categories")) return new Response("gateway error", { status: 502 });
+    return new Response("Ok.");
+  };
+  const client = loadClient().createClient(
+    { address: "http://qb.local/", username: "a", password: "b" },
+    fetchMock
+  );
+  assert.equal(await client.ensureCategory("PT_AGENT"), true);
+});
+
+test("still surfaces a real createCategory failure", async () => {
+  const fetchMock = async (url) => {
+    const path = new URL(url).pathname;
+    if (path.endsWith("/torrents/categories")) {
+      return new Response("{}", { headers: { "content-type": "application/json" } });
+    }
+    if (path.endsWith("/torrents/createCategory")) return new Response("Bad Request", { status: 400 });
+    return new Response("Ok.");
+  };
+  const client = loadClient().createClient(
+    { address: "http://qb.local/", username: "a", password: "b" },
+    fetchMock
+  );
+  await assert.rejects(() => client.ensureCategory("PT_AGENT"), /HTTP 400/);
+});

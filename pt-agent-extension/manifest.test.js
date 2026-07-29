@@ -39,8 +39,8 @@ test("keeps the toolbar popup as the compact mode", () => {
   assert.equal(manifest.action.default_popup, "popup.html");
 });
 
-test("publishes the resource-to-task link update as version 0.17.0", () => {
-  assert.equal(manifest.version, "0.17.0");
+test("publishes the category conflict fix as version 0.17.1", () => {
+  assert.equal(manifest.version, "0.17.1");
 });
 
 test("covers the M-Team download CDN so the .torrent bytes can be fetched", () => {

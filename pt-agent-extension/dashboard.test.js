@@ -329,6 +329,15 @@ test("surfaces enqueue failures via a global toast and post-send verification", 
   assert.match(script, /未出现任务/);
 });
 
+test("reports an already-present torrent honestly instead of as a fresh send", () => {
+  const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
+  assert.match(script, /duplicate: Boolean\(addResult\?\.duplicate\)/);
+  assert.match(script, /已在下载器中，无需重复添加/);
+  assert.match(script, /status: result\.duplicate \? "already_present" : "queued"/);
+  // 不能把"其实早就在了"谎报成"刚刚发送成功"
+  assert.match(script, /种子已存在于下载器/);
+});
+
 test("persists the resource-to-task link and shows the resource name on tasks", () => {
   const script = fs.readFileSync(path.join(extensionDir, "popup.js"), "utf8");
   // 站点资源名和 qB 任务名是两套命名，必须持久化对应关系而不是每次猜

@@ -527,3 +527,31 @@ test("still surfaces a real createCategory failure", async () => {
   );
   await assert.rejects(() => client.ensureCategory("PT_AGENT"), /HTTP 400/);
 });
+
+test("treats a 409 from torrents/add as the torrent already being present", async () => {
+  const calls = [];
+  const fetchMock = async (url) => {
+    const path = new URL(url).pathname;
+    calls.push(path);
+    if (path.endsWith("/torrents/add")) return new Response("Conflict", { status: 409 });
+    return new Response("Ok.");
+  };
+  const client = loadClient().createClient(
+    { address: "http://qb.local/", username: "a", password: "b" },
+    fetchMock
+  );
+  // qB 5.x 对「种子已在会话中」返回 409：目标已达成，不能报失败
+  const result = await client.addTorrent({ url: "https://tracker/1" });
+  assert.equal(result.duplicate, true);
+  assert.equal(result.success_count, 0, "重复添加不该记成新增");
+});
+
+test("does not swallow a non-409 failure from torrents/add", async () => {
+  const client = loadClient().createClient(
+    { address: "http://qb.local/", username: "a", password: "b" },
+    async (url) => (new URL(url).pathname.endsWith("/torrents/add")
+      ? new Response("Server Error", { status: 500 })
+      : new Response("Ok."))
+  );
+  await assert.rejects(() => client.addTorrent({ url: "https://tracker/1" }), /HTTP 500/);
+});

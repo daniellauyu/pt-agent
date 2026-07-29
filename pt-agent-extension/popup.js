@@ -1476,6 +1476,7 @@ const enqueueTorrentDirectToQb = async (torrent, downloadUrl, operationId) => {
   debug("qb:add-result", addResult, operationId);
   return {
     route: file ? "file" : "url",
+    duplicate: Boolean(addResult?.duplicate),
     downloader: downloader.name,
     category,
     evaluation: {
@@ -1568,24 +1569,29 @@ const enqueueTorrent = async (torrent, { manualOverride = false, batchQueued = 0
     const result = await enqueueTorrentDirectToQb(torrent, downloadUrl, operationId);
     await appendAuditEvent({
       action: manualOverride ? "enqueue_manual_override" : "enqueue",
-      status: "queued",
+      status: result.duplicate ? "already_present" : "queued",
       title: torrent.title,
       site: torrent.site,
       torrentId: torrent.torrentId || "",
       deadline: torrent.freeEndAt,
       progress: 0,
       downloader: result.downloader,
-      reason: manualOverride
+      reason: result.duplicate
+        ? `种子已存在于下载器 ${result.downloader}，未重复添加`
+        : manualOverride
         ? `用户手动覆盖 risk 准入，下载器 ${result.downloader}，分类 ${result.category}，评分 ${result.evaluation.score}`
         : `本地安全准入通过，下载器 ${result.downloader}，分类 ${result.category}，评分 ${result.evaluation.score}`,
       deleteFiles: false
     }, operationId).catch(() => {});
     state.qbPushStatus.set(key, "success");
-    const okMessage = manualOverride
-      ? `已按你的判断手动发送：${torrent.title}`
-      : `已发送到 qBittorrent：${torrent.title}`;
+    // 种子已在下载器里时如实说明，不要谎报成"刚刚发送成功"。
+    const okMessage = result.duplicate
+      ? `已在下载器中，无需重复添加：${torrent.title}`
+      : manualOverride
+        ? `已按你的判断手动发送：${torrent.title}`
+        : `已发送到 qBittorrent：${torrent.title}`;
     setQbMessage(`${okMessage}；下载器：${result.downloader}，分类：${result.category}`, "success");
-    showToast(`✅ ${okMessage}`, "success");
+    showToast(`${result.duplicate ? "ℹ️" : "✅"} ${okMessage}`, "success");
     // 发送后验证：qB 可能回「Ok」却因保存目录无效/重复/被拒而不真正添加，此处兜底提示，避免假成功。
     void verifyEnqueued(torrent, operationId);
     return true;

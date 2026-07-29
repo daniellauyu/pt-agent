@@ -97,7 +97,18 @@ globalThis.PT_AGENT_QB = (() => {
       if (savePath) body.set("savepath", savePath);
       if (category) body.set("category", category);
       onLog("qb:add-request", { route: file ? "file" : "url", filename: file ? filename : undefined, fileSize: file?.size, tag, savePath, category });
-      const response = await request("torrents/add", { method: "POST", body });
+      let response;
+      try {
+        response = await request("torrents/add", { method: "POST", body });
+      } catch (error) {
+        // qB 5.x 在「种子已存在于会话中」时对 torrents/add 返回 409 Conflict。
+        // 对使用者来说目标已经达成（qB 里就是有这个种子），报失败只会让人以为没加上。
+        if (/\b409\b/.test(String(error?.message || ""))) {
+          onLog("qb:add-duplicate", { detail: String(error?.message || "").slice(0, 200) });
+          return { success_count: 0, duplicate: true };
+        }
+        throw error;
+      }
       const contentType = response.headers.get("content-type") || "";
       // 判定原则：HTTP 2xx 已经说明 qB 收下了请求，只有「明确的失败标志」才算失败。
       // 之前要求响应体严格等于 "Ok."，任何空响应体、大小写差异或被反向代理改写过的响应

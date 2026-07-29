@@ -1,0 +1,372 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="stylesheet" href="style.css">
+  <link rel="stylesheet" href="daemon.css">
+  <title>PT Agent 守护进程</title>
+</head>
+<body>
+  <div class="app-shell">
+    <aside class="sidebar">
+      <div class="brand">
+        <span class="brand-mark">PT</span>
+        <div>
+          <strong>PT Agent</strong>
+          <span>守护进程控制台</span>
+        </div>
+      </div>
+      <nav class="nav">
+        <button class="nav-item active" type="button" data-view="overview">
+          <span class="nav-icon">◎</span>
+          运行总览
+        </button>
+        <button class="nav-item" type="button" data-view="resources">
+          <span class="nav-icon">⌁</span>
+          种子决策
+        </button>
+        <button class="nav-item" type="button" data-view="downloads">
+          <span class="nav-icon">↓</span>
+          下载中
+        </button>
+        <button class="nav-item" type="button" data-view="settings">
+          <span class="nav-icon">⚙</span>
+          设置
+        </button>
+        <button class="nav-item" type="button" data-view="logs">
+          <span class="nav-icon">☰</span>
+          日志
+        </button>
+        <div class="nav-label">下次扫描</div>
+        <div class="sidebar-site">
+          <span class="site-dot"></span>
+          <div>
+            <strong id="sidebarNextScan">未调度</strong>
+            <span id="sidebarInterval">间隔未知</span>
+          </div>
+        </div>
+        <div class="nav-label">当前下载器</div>
+        <div class="sidebar-site">
+          <span class="site-dot"></span>
+          <div>
+            <strong id="sidebarDownloader">未选择</strong>
+            <span id="sidebarDownloaderMode">按可达性自动选路</span>
+          </div>
+        </div>
+      </nav>
+      <div class="sidebar-foot">
+        <span id="sidebarGuardState">Free 到期保护</span>
+        <small id="sidebarHome">—</small>
+      </div>
+    </aside>
+
+    <div class="workspace">
+      <header class="topbar">
+        <div>
+          <div class="eyebrow">TORRENT DAEMON</div>
+          <h1 id="viewTitle">运行总览</h1>
+          <p id="pageInfo">正在读取守护进程状态…</p>
+        </div>
+        <div class="topbar-actions">
+          <button id="themeBtn" class="btn btn-icon" type="button" title="切换亮/暗主题">🌙</button>
+          <button id="dryRunBtn" class="btn btn-quiet" type="button">只评估不下载</button>
+          <button id="scanBtn" class="btn btn-primary" type="button"><span>↻</span> 立即扫描</button>
+        </div>
+      </header>
+
+      <main class="content">
+        <div class="view-switcher" aria-label="页面菜单">
+          <button class="view-switch active" type="button" data-view="overview">运行总览</button>
+          <button class="view-switch" type="button" data-view="resources">可下载资源</button>
+          <button class="view-switch" type="button" data-view="downloads">下载中</button>
+          <button class="view-switch" type="button" data-view="settings">设置</button>
+          <button class="view-switch" type="button" data-view="logs">日志</button>
+        </div>
+
+        <!-- ============ 运行总览 ============ -->
+        <div class="workspace-view active" data-view-panel="overview">
+          <section class="overview-grid">
+            <div class="account panel">
+              <div class="panel-kicker">调度状态</div>
+              <div class="metric-row">
+                <div class="metric"><span>下次扫描</span><strong id="mNextScan">-</strong></div>
+                <div class="metric"><span>随机间隔</span><strong id="mInterval">-</strong></div>
+                <div class="metric"><span>上次扫描</span><strong id="mLastScan">-</strong></div>
+                <div class="metric"><span>自动下载</span><strong id="mAutoDownload">-</strong></div>
+                <div class="metric"><span>每轮上限</span><strong id="mMaxPush">-</strong></div>
+                <div class="metric"><span>占用下载槽</span><strong id="mSlots">-</strong></div>
+              </div>
+              <div class="metric-note" id="overviewNote"></div>
+            </div>
+
+            <section class="site-panel panel">
+              <div class="resource-head">
+                <div>
+                  <div class="panel-kicker">上一轮结果</div>
+                  <div class="site-name" id="lastScanTitle">尚未扫描</div>
+                </div>
+                <span id="lastScanStatus" class="site-status bad">无数据</span>
+              </div>
+              <div class="site-fields" id="lastScanFields"></div>
+            </section>
+          </section>
+
+          <section class="panel">
+            <div class="resource-head">
+              <div>
+                <div class="panel-kicker">MANUAL ACTIONS</div>
+                <h2>手动操作</h2>
+              </div>
+              <div class="export-actions">
+                <button id="guardRunBtn" class="btn btn-quiet" type="button">立即运行 Free 保护</button>
+                <button id="backfillBtn" class="btn btn-quiet" type="button">回填 Free 截止标签</button>
+                <button id="refreshBtn" class="btn btn-quiet" type="button">刷新</button>
+              </div>
+            </div>
+            <p class="settings-hint">
+              守护进程按 <strong>随机间隔</strong> 自动扫描并只推送<strong>推荐</strong>级别的资源；
+              入队时把 Free 截止时间写进标签，到期还没下完会被自动删除（含文件）。
+              这里的按钮只是把同样的动作提前触发一次，不会打乱既定节奏。
+            </p>
+            <div id="overviewMessage" class="downloader-message"></div>
+            <pre id="actionResult" class="action-result" hidden></pre>
+          </section>
+
+          <section class="panel">
+            <div class="resource-head">
+              <div>
+                <div class="panel-kicker">LIFECYCLE AUDIT</div>
+                <h3>最近动作记录</h3>
+              </div>
+              <span id="auditCount" class="site-status ok">0 条</span>
+            </div>
+            <div id="auditList" class="audit-list">
+              <div class="empty compact-empty">暂无记录。</div>
+            </div>
+          </section>
+        </div>
+
+        <!-- ============ 可下载资源 ============ -->
+        <div class="workspace-view" data-view-panel="resources">
+          <section class="resource-panel panel">
+            <div class="resource-head">
+              <div>
+                <div class="panel-kicker">扫描结果</div>
+                <h2>可下载资源</h2>
+              </div>
+              <div class="export-actions">
+                <span id="resourceScannedAt" class="site-status ok">-</span>
+                <button id="pushRecommendedBtn" class="btn btn-primary" type="button">一键下载推荐</button>
+              </div>
+            </div>
+            <div class="tabs">
+              <button class="tab active" data-filter="all">全部 <b id="countAll">0</b></button>
+              <button class="tab" data-filter="recommend">推荐 <b id="countRecommend">0</b></button>
+              <button class="tab" data-filter="risk">风险 <b id="countRisk">0</b></button>
+              <button class="tab" data-filter="reject">拒绝 <b id="countReject">0</b></button>
+            </div>
+            <div id="resourceMessage" class="downloader-message"></div>
+            <div id="list" class="list">
+              <div class="empty">还没有扫描结果，点右上角「立即扫描」。</div>
+            </div>
+          </section>
+        </div>
+
+        <!-- ============ 下载中 ============ -->
+        <div class="workspace-view" data-view-panel="downloads">
+          <section class="downloader-panel panel">
+            <div class="resource-head">
+              <div>
+                <div class="panel-kicker">MY DOWNLOADER</div>
+                <h2>下载中</h2>
+              </div>
+              <div class="export-actions">
+                <span id="taskStatus" class="site-status bad">未连接</span>
+                <button id="refreshTasksBtn" class="btn btn-quiet" type="button">刷新任务</button>
+              </div>
+            </div>
+            <div id="taskMessage" class="downloader-message"></div>
+            <div class="qb-table-header" aria-hidden="true">
+              <span>任务</span><span>状态</span><span>进度</span><span>速度</span><span>Free 保护</span><span></span>
+            </div>
+            <div id="taskList" class="qb-list">
+              <div class="empty compact-empty">点「刷新任务」读取下载器当前任务。</div>
+            </div>
+          </section>
+        </div>
+
+        <!-- ============ 设置 ============ -->
+        <div class="workspace-view" data-view-panel="settings">
+          <section class="panel settings-panel">
+            <div class="resource-head">
+              <div>
+                <div class="panel-kicker">SCHEDULE</div>
+                <h2>定时扫描</h2>
+              </div>
+              <div class="export-actions">
+                <button id="saveDaemonBtn" class="btn btn-primary" type="button">保存调度设置</button>
+              </div>
+            </div>
+            <p class="settings-hint">
+              每轮结束后在 <strong>[最短, 最长]</strong> 之间重新抽一个随机间隔。
+              两个值填成一样就是固定周期；随机化能避开固定时刻的抢种高峰，也不像脚本那么规律。
+            </p>
+            <div class="settings-grid policy-grid">
+              <label>
+                <span>最短间隔（分钟）</span>
+                <input id="dScanMin" type="number" min="1" max="10080" step="1">
+              </label>
+              <label>
+                <span>最长间隔（分钟）</span>
+                <input id="dScanMax" type="number" min="1" max="10080" step="1">
+              </label>
+              <label>
+                <span>每轮最多推送</span>
+                <input id="dMaxPush" type="number" min="0" max="500" step="1">
+                <small>0 表示不限；默认 5，避免一轮把带宽打满</small>
+              </label>
+              <label>
+                <span>保护检查间隔（秒）</span>
+                <input id="dGuardInterval" type="number" min="15" max="3600" step="5">
+              </label>
+              <label class="settings-switch">
+                <input id="dAutoDownload" type="checkbox">
+                <span>自动推送推荐资源</span>
+              </label>
+              <label class="settings-switch">
+                <input id="dScanOnStart" type="checkbox">
+                <span>启动时立刻扫描一次</span>
+              </label>
+            </div>
+            <div id="daemonMessage" class="downloader-message"></div>
+          </section>
+
+          <section class="panel settings-panel">
+            <div class="resource-head">
+              <div>
+                <div class="panel-kicker">DOWNLOAD POLICY</div>
+                <h2>下载策略</h2>
+              </div>
+              <div class="export-actions">
+                <button id="savePolicyBtn" class="btn btn-primary" type="button">保存策略</button>
+              </div>
+            </div>
+            <p class="settings-hint">
+              这些是<strong>本地安全准入</strong>的判定条件，和浏览器插件里同名同义。
+              并发数只提示不拦截——下载器自己有队列，超出的任务会排队而不是丢失。
+            </p>
+            <div class="settings-grid policy-grid">
+              <label><span>并发提醒阈值</span><input id="pMaxActive" type="number" min="1" max="200" step="1"></label>
+              <label><span>最低评分</span><input id="pMinScore" type="number" min="0" max="100" step="1"></label>
+              <label><span>单任务体积上限（GB）</span><input id="pMaxSize" type="number" min="1" max="4096" step="1"></label>
+              <label>
+                <span>Free 最短剩余（小时）</span>
+                <input id="pMinFreeHours" type="number" min="0" max="720" step="0.5">
+                <small>稀缺高需求资源可豁免此项</small>
+              </label>
+              <label>
+                <span>最低分享率</span>
+                <input id="pMinRatio" type="number" min="0" max="100" step="0.1">
+                <small>填 0 表示不检查分享率</small>
+              </label>
+              <label class="settings-switch"><input id="pRejectHr" type="checkbox"><span>拒绝 HR 任务</span></label>
+              <label class="settings-switch"><input id="pRejectMissingFreeEnd" type="checkbox"><span>缺少 Free 截止时间时标记为风险</span></label>
+            </div>
+            <div id="policyMessage" class="downloader-message"></div>
+          </section>
+
+          <section class="panel settings-panel">
+            <div class="resource-head">
+              <div>
+                <div class="panel-kicker">FREE GUARD</div>
+                <h2>Free 到期保护</h2>
+              </div>
+              <div class="export-actions">
+                <button id="saveGuardBtn" class="btn btn-quiet" type="button">保存保护设置</button>
+              </div>
+            </div>
+            <div class="guard-settings">
+              <div>
+                <strong>Free Guard</strong>
+                <span>按上面的「保护检查间隔」定期检查；到期前处理未完成任务。</span>
+              </div>
+              <label><input id="gMonitorEnabled" type="checkbox"><span>后台监控</span></label>
+              <label><span>保护窗口</span><input id="gMinutes" type="number" min="1" max="120" step="1"><span>分钟</span></label>
+              <label class="danger-switch">
+                <input id="gAutoDelete" type="checkbox">
+                <span>到期前自动删除未完成任务和文件</span>
+              </label>
+            </div>
+            <div id="guardMessage" class="downloader-message"></div>
+          </section>
+
+          <section class="panel settings-panel">
+            <div class="resource-head">
+              <div>
+                <div class="panel-kicker">DOWNLOADERS</div>
+                <h2>下载器</h2>
+              </div>
+              <div class="export-actions">
+                <button id="addDownloaderBtn" class="btn btn-primary" type="button">新增下载器</button>
+              </div>
+            </div>
+            <p class="settings-hint">
+              按列表顺序探测可达性，第一台连得上的就用它。把内网地址放前面，
+              出门在外时它会超时并自动落到公网地址那条。密码只写入不回读，页面上永远看不到。
+            </p>
+            <div id="downloaderList" class="settings-list"></div>
+            <div id="downloaderMessage" class="downloader-message"></div>
+          </section>
+
+          <section class="panel settings-panel">
+            <div class="resource-head">
+              <div>
+                <div class="panel-kicker">SITES</div>
+                <h2>站点</h2>
+              </div>
+              <div class="export-actions">
+                <button id="addSiteBtn" class="btn btn-primary" type="button">新增站点</button>
+              </div>
+            </div>
+            <div id="siteList" class="settings-list"></div>
+            <div id="siteMessage" class="downloader-message"></div>
+          </section>
+        </div>
+
+        <!-- ============ 日志 ============ -->
+        <div class="workspace-view" data-view-panel="logs">
+          <section class="log-panel panel">
+            <div class="resource-head">
+              <div>
+                <div class="panel-kicker">RUNTIME LOG</div>
+                <h2>运行日志</h2>
+              </div>
+              <div class="export-actions">
+                <select id="logLevel" class="log-filter">
+                  <option value="">全部级别</option>
+                  <option value="info">info 及以上</option>
+                  <option value="warn">warn 及以上</option>
+                  <option value="error">仅 error</option>
+                </select>
+                <input id="logPrefix" class="log-filter" type="text" placeholder="事件前缀，如 push:">
+                <span id="logCount" class="site-status ok">0 条</span>
+                <button id="refreshLogsBtn" class="btn btn-quiet" type="button">刷新</button>
+                <button id="clearLogsBtn" class="btn btn-quiet" type="button">清空</button>
+              </div>
+            </div>
+            <div class="log-table-header" aria-hidden="true">
+              <span>时间</span><span>级别</span><span>事件与内容</span><span></span>
+            </div>
+            <div id="logList" class="log-list">
+              <div class="empty compact-empty">暂无日志。</div>
+            </div>
+          </section>
+        </div>
+      </main>
+    </div>
+  </div>
+
+  <script src="app.js"></script>
+</body>
+</html>

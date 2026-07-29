@@ -1,0 +1,296 @@
+"use strict";
+
+const http = require("node:http");
+const fsp = require("node:fs/promises");
+const path = require("node:path");
+const crypto = require("node:crypto");
+
+const { runScan, pushSelected } = require("../runner");
+const { runGuard, backfillDeadlines } = require("../guard");
+const { connect } = require("../downloader");
+
+const PUBLIC_DIR = path.join(__dirname, "public");
+const MIME = {
+  ".html": "text/html; charset=utf-8",
+  ".css": "text/css; charset=utf-8",
+  ".js": "text/javascript; charset=utf-8",
+  ".json": "application/json; charset=utf-8",
+  ".svg": "image/svg+xml"
+};
+
+const isLoopback = (host) => /^(127\.|::1$|localhost$)/i.test(String(host || ""));
+
+// 配置里存着下载器密码和站点 API Key。它们只需要写入，永远不该再读回浏览器，
+// 所以出站一律脱敏，只告诉前端"填过没有"。
+const maskDownloader = (item) => ({ ...item, password: "", hasPassword: Boolean(item.password) });
+const maskSite = (item) => ({ ...item, apiKey: "", hasApiKey: Boolean(item.apiKey) });
+const maskDaemon = (item) => ({ ...item, webToken: "", hasWebToken: Boolean(item.webToken) });
+
+const readBody = (request, limitBytes = 1024 * 1024) => new Promise((resolve, reject) => {
+  const chunks = [];
+  let size = 0;
+  request.on("data", (chunk) => {
+    size += chunk.length;
+    if (size > limitBytes) {
+      reject(new Error("请求体过大"));
+      request.destroy();
+      return;
+    }
+    chunks.push(chunk);
+  });
+  request.on("end", () => {
+    const raw = Buffer.concat(chunks).toString("utf8");
+    if (!raw) return resolve({});
+    try {
+      resolve(JSON.parse(raw));
+    } catch (_) {
+      reject(new Error("请求体不是合法 JSON"));
+    }
+  });
+  request.on("error", reject);
+});
+
+const createServer = (ctx, { scheduler = null } = {}) => {
+  const routes = [];
+  const route = (method, pattern, handler) => routes.push({ method, pattern, handler });
+
+  // ---------- 只读状态 ----------
+  route("GET", /^\/api\/status$/, async () => {
+    const daemon = await ctx.config.readDaemon();
+    const policy = await ctx.config.readPolicy();
+    const state = await ctx.state.read();
+    const downloaders = await ctx.downloaders.list();
+    const sites = await ctx.sites.list();
+    return {
+      version: require("../../package.json").version,
+      startedAt: ctx.startedAt || null,
+      scheduler: scheduler ? scheduler.status() : { running: false, scanning: false, nextScanAt: null },
+      daemon: maskDaemon(daemon),
+      policy,
+      lastScan: state.lastScan || null,
+      lastScanAt: state.lastScanAt || null,
+      lastGuardAt: state.lastGuardAt || null,
+      nextScanAt: state.nextScanAt || null,
+      downloaderCount: downloaders.length,
+      siteCount: sites.length,
+      home: ctx.paths.root
+    };
+  });
+
+  route("GET", /^\/api\/resources$/, async () => {
+    const state = await ctx.state.read();
+    return { evaluated: state.lastEvaluated || [], scannedAt: state.lastScanAt || null };
+  });
+
+  route("GET", /^\/api\/tasks$/, async () => {
+    const { client, downloader } = await connect(ctx);
+    const tasks = await client.listTorrents("all");
+    const index = ctx.engines.links.createIndex(await ctx.links.list());
+    return {
+      downloader: downloader.name,
+      slots: ctx.engines.qb.summarizeDownloadSlots(tasks),
+      tasks: tasks.map((task) => ({
+        hash: task.hash,
+        name: task.name,
+        size: task.size,
+        progress: task.progress,
+        state: task.state,
+        dlspeed: task.dlspeed,
+        tags: task.tags,
+        category: task.category,
+        deadline: ctx.engines.qb.deadlineFromTags(task.tags),
+        resource: index.forHash(task.hash)
+      }))
+    };
+  });
+
+  route("GET", /^\/api\/logs$/, async (_body, _params, url) => {
+    return ctx.logger.readLogs({
+      limit: Number(url.searchParams.get("limit") || 200),
+      level: url.searchParams.get("level") || null,
+      prefix: url.searchParams.get("prefix") || null
+    });
+  });
+
+  route("DELETE", /^\/api\/logs$/, async () => {
+    await ctx.logger.clearLogs();
+    return { cleared: true };
+  });
+
+  route("GET", /^\/api\/audit$/, async (_body, _params, url) => {
+    return ctx.logger.readAudit({ limit: Number(url.searchParams.get("limit") || 200) });
+  });
+
+  // ---------- 配置 ----------
+  route("GET", /^\/api\/settings$/, async () => ({
+    policy: await ctx.config.readPolicy(),
+    daemon: maskDaemon(await ctx.config.readDaemon()),
+    downloaders: (await ctx.downloaders.list()).map(maskDownloader),
+    sites: (await ctx.sites.list()).map(maskSite),
+    downloaderTypes: ctx.engines.downloaderTypes.list(),
+    siteTypes: Object.values(ctx.engines.siteStore.SITE_TYPES)
+  }));
+
+  route("PUT", /^\/api\/settings\/policy$/, async (body) => ctx.config.savePolicy(body));
+
+  route("PUT", /^\/api\/settings\/daemon$/, async (body) => {
+    // 令牌留空表示"不修改"，否则每次在页面上保存调度设置都会把它清掉。
+    const current = await ctx.config.readDaemon();
+    const next = await ctx.config.saveDaemon({ ...body, webToken: body.webToken || current.webToken });
+    ctx.logger.info("webui:daemon-settings-saved", {
+      scanRange: `${next.scanIntervalMinMinutes}-${next.scanIntervalMaxMinutes} 分钟`,
+      autoDownload: next.autoDownload
+    });
+    return maskDaemon(next);
+  });
+
+  route("POST", /^\/api\/downloaders$/, async (body) => {
+    const existing = (await ctx.downloaders.list()).find((item) => item.id === body.id);
+    // 前端拿不到密码，提交时留空就意味着"不改"，不能当成清空。
+    const password = body.password || existing?.password || "";
+    const errors = ctx.engines.downloaderStore.validate(
+      ctx.engines.downloaderStore.normalize({ ...body, password })
+    );
+    if (errors.length) throw Object.assign(new Error(errors.join("；")), { status: 400 });
+    return maskDownloader(await ctx.downloaders.upsert({ ...body, password }));
+  });
+
+  route("DELETE", /^\/api\/downloaders\/([^/]+)$/, async (_body, params) => {
+    await ctx.downloaders.remove(decodeURIComponent(params[0]));
+    return { removed: true };
+  });
+
+  route("POST", /^\/api\/downloaders\/([^/]+)\/move$/, async (body, params) => {
+    const next = await ctx.downloaders.move(decodeURIComponent(params[0]), Number(body.offset || 0));
+    return next.map(maskDownloader);
+  });
+
+  route("POST", /^\/api\/downloaders\/([^/]+)\/test$/, async (_body, params) => {
+    const id = decodeURIComponent(params[0]);
+    const downloader = (await ctx.downloaders.list()).find((item) => item.id === id);
+    if (!downloader) throw Object.assign(new Error("下载器不存在"), { status: 404 });
+    const client = ctx.engines.downloaderTypes.createAdapter(downloader, {
+      onLog: (event, data) => ctx.logger.debug(event, data)
+    });
+    return client.diagnose();
+  });
+
+  route("POST", /^\/api\/sites$/, async (body) => {
+    const existing = (await ctx.sites.list()).find((item) => item.id === body.id);
+    const apiKey = body.apiKey || existing?.apiKey || "";
+    const errors = ctx.engines.siteStore.validate(ctx.engines.siteStore.normalize({ ...body, apiKey }));
+    if (errors.length) throw Object.assign(new Error(errors.join("；")), { status: 400 });
+    return maskSite(await ctx.sites.upsert({ ...body, apiKey }));
+  });
+
+  route("DELETE", /^\/api\/sites\/([^/]+)$/, async (_body, params) => {
+    await ctx.sites.remove(decodeURIComponent(params[0]));
+    return { removed: true };
+  });
+
+  // ---------- 动作 ----------
+  route("POST", /^\/api\/scan$/, async (body) => {
+    const options = { dryRun: Boolean(body.dryRun), force: Boolean(body.force) };
+    const result = scheduler ? await scheduler.triggerScan(options) : await runScan(ctx, options);
+    return result.summary;
+  });
+
+  route("POST", /^\/api\/push$/, async (body) => pushSelected(ctx, body.torrentIds || [], {
+    manualOverride: Boolean(body.manualOverride)
+  }));
+
+  route("POST", /^\/api\/guard\/run$/, async (body) => runGuard(ctx, { dryRun: Boolean(body.dryRun) }));
+
+  route("POST", /^\/api\/backfill$/, async () => backfillDeadlines(ctx));
+
+  route("GET", /^\/api\/exclusions$/, async () => ({ exclusions: await ctx.exclusions.list() }));
+
+  route("POST", /^\/api\/exclusions$/, async (body) => ctx.exclusions.exclude(body));
+
+  route("DELETE", /^\/api\/exclusions\/([^/]+)$/, async (_body, params) => {
+    await ctx.exclusions.restore(decodeURIComponent(params[0]));
+    return { restored: true };
+  });
+
+  const serveStatic = async (url, response) => {
+    const requested = url.pathname === "/" ? "/index.html" : url.pathname;
+    // 归一化后必须仍落在 public 目录内，挡掉 ../ 穿越。
+    const full = path.join(PUBLIC_DIR, path.normalize(requested).replace(/^(\.\.[/\\])+/, ""));
+    if (!full.startsWith(PUBLIC_DIR)) {
+      response.writeHead(403).end("Forbidden");
+      return;
+    }
+    try {
+      const content = await fsp.readFile(full);
+      response.writeHead(200, {
+        "Content-Type": MIME[path.extname(full)] || "application/octet-stream",
+        "Cache-Control": "no-cache"
+      });
+      response.end(content);
+    } catch (_) {
+      response.writeHead(404, { "Content-Type": "text/plain; charset=utf-8" }).end("Not Found");
+    }
+  };
+
+  const server = http.createServer(async (request, response) => {
+    const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+    const sendJson = (status, payload) => {
+      response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+      response.end(JSON.stringify(payload));
+    };
+
+    try {
+      if (!url.pathname.startsWith("/api/")) {
+        await serveStatic(url, response);
+        return;
+      }
+
+      if (ctx.webToken) {
+        const header = String(request.headers.authorization || "");
+        const supplied = header.replace(/^Bearer\s+/i, "") || url.searchParams.get("token") || "";
+        // 定长比较，避免用普通字符串比较泄漏前缀信息。
+        const ok = supplied.length === ctx.webToken.length &&
+          crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(ctx.webToken));
+        if (!ok) {
+          sendJson(401, { error: "访问令牌无效。启动时终端里打印过带 token 的地址。" });
+          return;
+        }
+      }
+
+      const matched = routes
+        .map((item) => ({ item, params: item.method === request.method ? url.pathname.match(item.pattern) : null }))
+        .find((entry) => entry.params);
+      if (!matched) {
+        sendJson(404, { error: `未知接口 ${request.method} ${url.pathname}` });
+        return;
+      }
+
+      const body = ["POST", "PUT", "PATCH"].includes(request.method) ? await readBody(request) : {};
+      const result = await matched.item.handler(body, matched.params.slice(1), url);
+      sendJson(200, result === undefined ? { ok: true } : result);
+    } catch (error) {
+      const status = Number(error?.status) || 500;
+      const message = String(error?.message || error);
+      // WebUI 上的每个失败都要进日志：只回给浏览器等于没人看得见。
+      ctx.logger.error("webui:error", {
+        method: request.method,
+        path: url.pathname,
+        status,
+        error: message
+      });
+      sendJson(status, { error: message });
+    }
+  });
+
+  const listen = ({ host, port }) => new Promise((resolve, reject) => {
+    server.once("error", reject);
+    server.listen(port, host, () => {
+      server.removeListener("error", reject);
+      resolve({ host, port, url: `http://${host}:${port}/` });
+    });
+  });
+
+  return { server, listen, close: () => new Promise((resolve) => server.close(resolve)) };
+};
+
+module.exports = { createServer, isLoopback, maskDownloader, maskSite, maskDaemon };

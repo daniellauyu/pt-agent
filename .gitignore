@@ -15,6 +15,10 @@ pt-core-service/.pytest_cache/
 pt-core-service/**/__pycache__/
 *.py[cod]
 
+# Node 依赖（守护进程本身零依赖，这里只挡 npm link 产生的目录）。
+pt-agent-daemon/node_modules/
+pt-agent-daemon/package-lock.json
+
 # Editor and temporary files.
 .idea/
 .vscode/

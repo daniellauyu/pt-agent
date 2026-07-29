@@ -1,0 +1,175 @@
+/* 守护进程 WebUI 的样式增量。
+ * style.css 是 pt-agent-extension/popup.css 的原样拷贝——保持一字不改，
+ * 插件那边改了视觉直接重新拷贝即可，所有差异都收在这个文件里。 */
+
+/* popup.css 的 .settings-chip.warn 引用了 --warn，但主题只定义了 --amber，
+ * color-mix 拿不到变量会整条规则失效。这里补上定义，让「缺少 API Key」之类的提示能正常显示。 */
+:root {
+  --warn: #d8a24a;
+}
+
+:root[data-theme="light"] {
+  --warn: #b9822f;
+}
+
+/* ============ 设置卡片内的表单 ============ */
+.settings-card-body {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+  gap: 12px 16px;
+  padding: 14px 16px;
+}
+
+.settings-card-body label {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  color: var(--muted);
+  font-size: 12px;
+}
+
+.settings-card-body label > span {
+  font-weight: 600;
+}
+
+.settings-card-body input[type="text"],
+.settings-card-body input[type="password"],
+.settings-card-body input[type="number"],
+.settings-card-body select {
+  padding: 8px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: var(--panel);
+  color: var(--text);
+  font-size: 13px;
+}
+
+.settings-card-body input:focus,
+.settings-card-body select:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+.settings-card-body .settings-card-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 8px;
+  justify-content: flex-end;
+  padding-top: 4px;
+}
+
+.settings-card-body .full-width {
+  grid-column: 1 / -1;
+}
+
+.settings-card-body small {
+  color: var(--muted);
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+/* ============ 总览 ============ */
+.action-result {
+  margin: 0 24px 18px;
+  max-height: 320px;
+  overflow: auto;
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-sm);
+  background: color-mix(in srgb, var(--bg) 55%, var(--panel));
+  color: var(--text-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12px;
+  line-height: 1.55;
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.site-fields .field-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 6px 0;
+  border-bottom: 1px solid var(--border-soft);
+  font-size: 12px;
+}
+
+.site-fields .field-row:last-child {
+  border-bottom: 0;
+}
+
+.site-fields .field-row span:first-child {
+  color: var(--muted);
+}
+
+.site-fields .field-row strong {
+  color: var(--text);
+  font-variant-numeric: tabular-nums;
+}
+
+/* ============ 日志筛选 ============ */
+.log-filter {
+  padding: 6px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius-pill);
+  background: var(--panel-2);
+  color: var(--text);
+  font-size: 12px;
+}
+
+.log-filter[type="text"] {
+  min-width: 160px;
+}
+
+.log-filter:focus {
+  border-color: var(--accent);
+  outline: none;
+}
+
+/* 守护进程日志没有插件那种"请求/响应"配对，级别列比事件名更有用。 */
+.log-table-header,
+.log-main {
+  grid-template-columns: 168px 90px minmax(0, 1fr) 20px;
+}
+
+.log-level {
+  color: var(--muted);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 11px;
+  font-weight: 700;
+  text-transform: uppercase;
+}
+
+/* ============ 忙碌态 ============ */
+.is-busy {
+  opacity: 0.6;
+  pointer-events: none;
+}
+
+.toast-stack {
+  position: fixed;
+  right: 20px;
+  bottom: 20px;
+  z-index: 60;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  max-width: 380px;
+}
+
+.toast {
+  padding: 12px 14px;
+  border: 1px solid var(--border);
+  border-left: 3px solid var(--accent);
+  border-radius: var(--radius-sm);
+  background: var(--panel-2);
+  box-shadow: var(--shadow);
+  color: var(--text);
+  font-size: 13px;
+  line-height: 1.5;
+  white-space: pre-wrap;
+}
+
+.toast.success { border-left-color: var(--ok); }
+.toast.error { border-left-color: var(--danger); }

@@ -134,7 +134,7 @@ qB 的判定规则是「Origin 和 Referer 都为空则不算跨站请求」，�
 
 4. 选择目录：
 
-   /Users/daniellau/Desktop/huixing/Developer/PTAgentHub/pt-agent-extension
+   <仓库目录>/pt-agent-extension
 
 ## 使用方式
 

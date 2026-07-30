@@ -318,7 +318,11 @@ const createServer = (ctx, { scheduler = null } = {}) => {
         status,
         error: message
       });
-      sendJson(status, { error: message });
+      // 4xx 是给用户修配置的可操作信息；5xx 可能带第三方响应、绝对路径或栈详情，
+      // 只进已脱敏日志，不能直接回给浏览器。
+      sendJson(status, {
+        error: status >= 500 ? "服务器内部错误，详情已写入运行日志。" : message
+      });
     }
   });
 

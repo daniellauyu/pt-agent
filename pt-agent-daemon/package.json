@@ -1,6 +1,6 @@
 {
   "name": "pt-agent-daemon",
-  "version": "0.4.3",
+  "version": "0.4.4",
   "description": "PT Agent 终端守护进程：定时扫描 Free 资源、只下载推荐项、Free 到期自动清理，附带与浏览器插件同款 WebUI。",
   "type": "commonjs",
   "private": true,

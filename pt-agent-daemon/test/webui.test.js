@@ -179,6 +179,23 @@ test("接口出错会被记进日志——只回给浏览器等于没人看得�
   });
 });
 
+test("内部异常详情只进日志，不把路径或栈信息返回浏览器", async () => {
+  await withServer({}, async ({ base, ctx }) => {
+    ctx.downloaders.list = async () => {
+      throw new Error("boom at /Users/private-name/project/file.js:42");
+    };
+    const response = await fetch(`${base}/api/status`);
+    assert.equal(response.status, 500);
+    const payload = await response.json();
+    assert.equal(payload.error, "服务器内部错误，详情已写入运行日志。");
+    assert.doesNotMatch(JSON.stringify(payload), /private-name|file\.js|boom/);
+
+    await ctx.logger.flush();
+    const { records } = await ctx.logger.readLogs({ level: "error" });
+    assert.match(records.at(-1).data.error, /\/Users\/\[REDACTED\]/);
+  });
+});
+
 test("状态接口返回调度与上一轮扫描的全貌", async () => {
   await withServer({}, async ({ base }) => {
     const status = await (await fetch(`${base}/api/status`)).json();

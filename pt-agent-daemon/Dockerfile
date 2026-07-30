@@ -1,5 +1,5 @@
 # 守护进程零第三方依赖，镜像里只要 Node 运行时和源码。
-FROM node:22-alpine
+FROM node:26-alpine
 
 # 用非 root 跑：这个进程能删下载器里的文件，没有任何理由让它以 root 身份运行。
 # node 镜像自带 uid/gid 1000 的 node 用户。

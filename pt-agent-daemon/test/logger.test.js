@@ -32,6 +32,32 @@ test("日志按行存 JSON，agent 可以逐行解析", async () => {
   assert.equal(first.level, "info");
   assert.deepEqual(first.data, { dryRun: false });
   assert.ok(Date.parse(first.at));
+  assert.equal(fs.statSync(logger.files.logFile).mode & 0o777, 0o600);
+});
+
+test("日志写入和读取都会脱敏凭据、URL 参数与本机用户名", async () => {
+  const { logger } = makeLogger();
+  await logger.error("qb:error", {
+    password: "plain-password",
+    apiKey: "plain-api-key",
+    downloadUrl: "https://m-team.cc/download?id=1&token=plain-token",
+    message: "Bearer bearer-value at https://m-team.cc/api?token=query-secret",
+    stack: "/Users/daniel/develop/pt-agent/file.js:1"
+  });
+  const raw = fs.readFileSync(logger.files.logFile, "utf8");
+  assert.doesNotMatch(raw, /plain-password|plain-api-key|plain-token|bearer-value|query-secret|\/Users\/daniel/);
+  const { records } = await logger.readLogs({});
+  assert.equal(records[0].data.password, "[REDACTED]");
+  assert.match(records[0].data.stack, /\/Users\/\[REDACTED\]/);
+
+  fs.writeFileSync(logger.files.logFile, JSON.stringify({
+    at: new Date().toISOString(),
+    level: "error",
+    event: "legacy",
+    data: { secret: "old-secret" }
+  }));
+  const legacy = await logger.readLogs({});
+  assert.equal(legacy.records[0].data.secret, "[REDACTED]");
 });
 
 test("按级别过滤：只看 error 时 info 不会混进来", async () => {
@@ -82,6 +108,7 @@ test("审计记录字段与插件同构，便于同一套脚本分析两边导�
   });
   const { records } = await logger.readAudit({});
   assert.equal(records.length, 1);
+  assert.equal(fs.statSync(logger.files.auditFile).mode & 0o777, 0o600);
   assert.deepEqual(Object.keys(records[0]).sort(), [
     "action", "at", "deadline", "deleteFiles", "downloader", "hash",
     "operation_id", "progress", "reason", "site", "status", "title", "torrentId"

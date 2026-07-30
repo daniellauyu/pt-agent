@@ -3,6 +3,7 @@
 const fsp = require("node:fs/promises");
 const path = require("node:path");
 const crypto = require("node:crypto");
+const { redact } = require("./redact");
 
 const LEVELS = { debug: 10, info: 20, warn: 30, error: 40 };
 
@@ -49,8 +50,11 @@ const createLogger = ({
   };
 
   const appendLine = async (file, record, cap) => {
-    await fsp.mkdir(path.dirname(file), { recursive: true });
-    await fsp.appendFile(file, `${JSON.stringify(record)}\n`, "utf8");
+    const directory = path.dirname(file);
+    await fsp.mkdir(directory, { recursive: true, mode: 0o700 });
+    await fsp.chmod(directory, 0o700);
+    await fsp.appendFile(file, `${JSON.stringify(record)}\n`, { encoding: "utf8", mode: 0o600 });
+    await fsp.chmod(file, 0o600);
     writes += 1;
     // 每写 200 条裁剪一次，而不是每条都重写整个文件。
     if (writes % 200 === 0) await trim(file, cap);
@@ -61,7 +65,8 @@ const createLogger = ({
       const raw = await fsp.readFile(file, "utf8");
       const lines = raw.split("\n").filter(Boolean);
       if (lines.length <= cap) return;
-      await fsp.writeFile(file, `${lines.slice(-cap).join("\n")}\n`, "utf8");
+      await fsp.writeFile(file, `${lines.slice(-cap).join("\n")}\n`, { encoding: "utf8", mode: 0o600 });
+      await fsp.chmod(file, 0o600);
     } catch (error) {
       if (error.code !== "ENOENT") process.stderr.write(`[PT] 日志裁剪失败：${error.message}\n`);
     }
@@ -69,16 +74,16 @@ const createLogger = ({
 
   const write = (level, event, data, { operationId = null } = {}) => {
     if ((LEVELS[level] || LEVELS.info) < threshold) return Promise.resolve();
-    const record = {
+    const record = redact({
       at: new Date().toISOString(),
       level,
       event: String(event || "unknown"),
       operationId,
       data: data === undefined ? null : data
-    };
+    });
     if (mirrorToConsole) {
       const stream = level === "error" || level === "warn" ? process.stderr : process.stdout;
-      const detail = summarize(data);
+      const detail = summarize(record.data);
       const time = record.at.slice(11, 19);
       stream.write(`[PT ${time}] ${level.toUpperCase().padEnd(5)} ${record.event}${detail ? ` ${detail}` : ""}\n`);
     }
@@ -92,7 +97,7 @@ const createLogger = ({
    * 这样两边导出的 JSON 可以放进同一个分析脚本。
    */
   const appendAudit = (record) => {
-    const entry = {
+    const entry = redact({
       at: new Date().toISOString(),
       operation_id: record.operation_id || null,
       action: String(record.action || "unknown"),
@@ -106,7 +111,7 @@ const createLogger = ({
       downloader: record.downloader || "",
       reason: record.reason || "",
       deleteFiles: Boolean(record.deleteFiles)
-    };
+    });
     return serialize(() => appendLine(auditFile, entry, auditRetention)).catch((error) => {
       process.stderr.write(`[PT] 审计写入失败：${error.message}\n`);
     });
@@ -120,7 +125,7 @@ const createLogger = ({
       if (error.code === "ENOENT") return { total: 0, records: [] };
       throw error;
     }
-    let records = raw.split("\n").filter(Boolean).map(parseLine).filter(Boolean);
+    let records = raw.split("\n").filter(Boolean).map(parseLine).filter(Boolean).map((item) => redact(item));
     if (level) records = records.filter((item) => (LEVELS[item.level] || 0) >= (LEVELS[level] || 0));
     if (prefix) records = records.filter((item) => String(item.event || "").startsWith(prefix));
     if (since) records = records.filter((item) => item.at >= since);
@@ -168,4 +173,4 @@ const createLogger = ({
   return logger;
 };
 
-module.exports = { createLogger, newOperationId, summarize, LEVELS };
+module.exports = { createLogger, newOperationId, summarize, redact, LEVELS };

@@ -2112,11 +2112,13 @@ const switchView = (view) => {
 };
 
 const exportPayload = () => {
-  return {
+  // 扫描结果经常会被贴到 Issue 或聊天里排障：账号统计没有诊断价值，直接不导出；
+  // 下载链接、URL 参数等再走统一脱敏，避免页面降级扫描时把 passkey 带出去。
+  return globalThis.PT_AGENT_LOGGER.redact({
     page: state.scan?.page || null,
-    account: state.scan?.account || null,
+    account: { redacted: true },
     torrents: state.evaluated
-  };
+  });
 };
 
 const copyJson = async () => {
@@ -2153,6 +2155,10 @@ const exportAuditJson = () => {
 // 只导配置，不导日志、审计和运行期缓存——那些换台机器没有意义。
 const exportConfigJson = async () => {
   try {
+    if (!confirm(
+      "导出的配置包含下载器密码和站点 API Key，只应用于迁移到你自己的设备。" +
+      "\n\n不要上传到网盘、聊天、公开 Issue 或 Git 仓库。确认继续？"
+    )) return;
     const keys = [
       "ptAgentDownloaders",
       "ptAgentSites",
@@ -2171,7 +2177,7 @@ const exportConfigJson = async () => {
     const url = URL.createObjectURL(blob);
     const a = document.createElement("a");
     a.href = url;
-    a.download = `pt-agent-config-${Date.now()}.json`;
+    a.download = `pt-agent-config-CONTAINS-SECRETS-${Date.now()}.json`;
     a.click();
     URL.revokeObjectURL(url);
     setMigrationMessage(

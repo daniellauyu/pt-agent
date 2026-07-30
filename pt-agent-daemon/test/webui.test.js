@@ -6,7 +6,13 @@ const assert = require("node:assert/strict");
 const test = require("node:test");
 
 const { cleanup, createFakeNetwork, createHome, installFetch, withHome } = require("./helpers");
-const { isLoopback, maskDownloader, maskSite, maskDaemon } = require("../src/webui/server");
+const {
+  isLoopback,
+  isTrustedLoopbackRequest,
+  maskDownloader,
+  maskSite,
+  maskDaemon
+} = require("../src/webui/server");
 
 const startServer = async (root, { webToken = "" } = {}) => {
   return withHome(root, async () => {
@@ -87,7 +93,11 @@ test("设置了令牌后，无令牌的请求一律 401", async () => {
   await withServer({ webToken: "s3cret-token" }, async ({ base }) => {
     assert.equal((await fetch(`${base}/api/status`)).status, 401);
     assert.equal((await fetch(`${base}/api/status?token=wrong`)).status, 401);
-    assert.equal((await fetch(`${base}/api/status?token=s3cret-token`)).status, 200);
+    assert.equal(
+      (await fetch(`${base}/api/status?token=s3cret-token`)).status,
+      401,
+      "正确令牌也不能放 query，避免进入历史和访问日志"
+    );
     const withHeader = await fetch(`${base}/api/status`, {
       headers: { Authorization: "Bearer s3cret-token" }
     });
@@ -98,7 +108,9 @@ test("设置了令牌后，无令牌的请求一律 401", async () => {
 test("令牌本身不会随配置一起发回页面", async () => {
   await withServer({ webToken: "s3cret-token" }, async ({ base, ctx }) => {
     await ctx.config.saveDaemon({ webToken: "s3cret-token" });
-    const settings = await (await fetch(`${base}/api/settings?token=s3cret-token`)).json();
+    const settings = await (await fetch(`${base}/api/settings`, {
+      headers: { Authorization: "Bearer s3cret-token" }
+    })).json();
     assert.equal(settings.daemon.webToken, "");
     assert.equal(settings.daemon.hasWebToken, true);
   });
@@ -107,9 +119,12 @@ test("令牌本身不会随配置一起发回页面", async () => {
 test("在页面上保存调度设置不会把令牌清掉", async () => {
   await withServer({ webToken: "s3cret-token" }, async ({ base, ctx }) => {
     await ctx.config.saveDaemon({ webToken: "s3cret-token" });
-    await fetch(`${base}/api/settings/daemon?token=s3cret-token`, {
+    await fetch(`${base}/api/settings/daemon`, {
       method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      headers: {
+        "Content-Type": "application/json",
+        Authorization: "Bearer s3cret-token"
+      },
       body: JSON.stringify({ scanIntervalMinMinutes: 25 })
     });
     const daemon = await ctx.config.readDaemon();
@@ -123,6 +138,24 @@ test("静态资源不能穿越到 public 目录之外", async () => {
     const response = await fetch(`${base}/..%2f..%2fpackage.json`);
     assert.ok([403, 404].includes(response.status), `期望被拒，实际 ${response.status}`);
   });
+});
+
+test("本机无令牌模式拒绝 DNS rebinding 的 Host 和 Origin", () => {
+  const request = (host, origin = "") => ({ headers: { host, origin } });
+  assert.equal(isTrustedLoopbackRequest(request("attacker.example")), false);
+  assert.equal(isTrustedLoopbackRequest(request("127.0.0.1:7788", "https://attacker.example")), false);
+  assert.equal(isTrustedLoopbackRequest(request("127.0.0.1:7788")), true);
+  assert.equal(isTrustedLoopbackRequest(request("localhost:7788", "http://localhost:7788")), true);
+  assert.equal(isTrustedLoopbackRequest(request("[::1]:7788", "http://[::1]:7788")), true);
+});
+
+test("WebUI 前端只通过 Authorization 和 sessionStorage 携带令牌", () => {
+  const fs = require("node:fs");
+  const path = require("node:path");
+  const source = fs.readFileSync(path.join(__dirname, "../src/webui/public/app.js"), "utf8");
+  assert.match(source, /sessionStorage/);
+  assert.match(source, /headers\.Authorization/);
+  assert.doesNotMatch(source, /searchParams\.set\(["']token/);
 });
 
 test("未知接口返回结构化错误而不是 HTML", async () => {

@@ -1,0 +1,47 @@
+name: Bug 报告
+description: 报告可复现的问题；请勿上传密钥、完整配置或未脱敏日志
+title: "[Bug] "
+labels:
+  - bug
+body:
+  - type: markdown
+    attributes:
+      value: |
+        提交前请阅读 SECURITY.md。不要粘贴 `.env`、配置迁移 JSON、密码、API Key、
+        WebUI token、带参数下载链接、未脱敏日志或包含账号/资源名的截图。
+  - type: checkboxes
+    id: privacy
+    attributes:
+      label: 隐私确认
+      options:
+        - label: 我已撤销意外公开的凭据，并检查下面内容不含密码、API Key、token、passkey 或 Cookie
+          required: true
+        - label: 我已遮住账号统计、资源标题、下载器地址、NAS 路径和浏览器地址栏
+          required: true
+  - type: input
+    id: version
+    attributes:
+      label: 版本
+      placeholder: 例如 daemon 0.4.3 / extension 0.20.2
+    validations:
+      required: true
+  - type: textarea
+    id: description
+    attributes:
+      label: 问题描述
+      description: 说明发生了什么、你预期发生什么。
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: 复现步骤
+      description: 使用占位符替代真实地址、账号、资源名和凭据。
+    validations:
+      required: true
+  - type: textarea
+    id: logs
+    attributes:
+      label: 已脱敏日志
+      description: 只贴复现所需的最少片段；不确定是否安全时请留空。
+      render: shell

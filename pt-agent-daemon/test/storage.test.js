@@ -11,12 +11,24 @@ const { createFileStorage } = require("../src/storage");
 const tempFile = () => path.join(fs.mkdtempSync(path.join(os.tmpdir(), "ptagent-store-")), "config.json");
 
 test("读写往返，并且和 chrome.storage.local 的取值语义一致", async () => {
-  const storage = createFileStorage(tempFile());
+  const file = tempFile();
+  const storage = createFileStorage(file);
   await storage.set({ a: 1, b: { c: 2 } });
   assert.deepEqual(await storage.get("a"), { a: 1 });
   assert.deepEqual(await storage.get(["a", "b"]), { a: 1, b: { c: 2 } });
   // 缺失的键返回 undefined 而不是报错，调用方靠 ?? 兜底。
   assert.deepEqual(await storage.get("missing"), { missing: undefined });
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
+  assert.equal(fs.statSync(path.dirname(file)).mode & 0o777, 0o700);
+});
+
+test("覆盖已有宽权限配置时也会收紧为 0600", async () => {
+  const file = tempFile();
+  fs.writeFileSync(file, JSON.stringify({ old: true }), { mode: 0o644 });
+  fs.chmodSync(file, 0o644);
+  const storage = createFileStorage(file);
+  await storage.set({ next: true });
+  assert.equal(fs.statSync(file).mode & 0o777, 0o600);
 });
 
 test("set 是合并而不是整体替换", async () => {
@@ -48,6 +60,7 @@ test("配置损坏时先备份再从空开始，用户还能捞回去", async ()
   const backups = fs.readdirSync(path.dirname(file)).filter((name) => name.includes(".broken-"));
   assert.equal(backups.length, 1);
   assert.match(fs.readFileSync(path.join(path.dirname(file), backups[0]), "utf8"), /这不是 JSON/);
+  assert.equal(fs.statSync(path.join(path.dirname(file), backups[0])).mode & 0o777, 0o600);
 });
 
 test("remove 只删指定键", async () => {

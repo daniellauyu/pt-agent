@@ -351,8 +351,12 @@ Free 至少 6 小时、下载人数至少 20、下载/做种比至少 10、完�
 
 - 插件的 `private-config.js`、守护进程的 `.env` 都在 `.gitignore` 里，导出的 `.env` 权限 600
 - WebUI 所有接口出站前脱敏密码、API Key 和访问令牌，只回 `hasPassword` 这类标记
+- WebUI 令牌只走 `Authorization`，不进入 URL；本机无令牌模式会校验 Host/Origin，阻止 DNS rebinding
 - WebUI 绑非回环地址时强制要求访问令牌，不设就拒绝启动
+- 普通扫描 JSON 会移除账号统计和下载链接；含密钥迁移配置会二次确认并使用醒目文件名
 - 连续认证失败会触发退避（qB 封 IP 后继续重试只会把封禁窗口无限续期）
+
+公开提交 Issue、日志或截图前请阅读 [SECURITY.md](SECURITY.md)。
 
 ---
 

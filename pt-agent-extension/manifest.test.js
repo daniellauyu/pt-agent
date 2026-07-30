@@ -57,6 +57,16 @@ test("lets the user export every setting for the terminal daemon", () => {
     .forEach((key) => assert.match(exportBlock, new RegExp(key), `导出缺少 ${key}`));
   ["ptAgentDebugLog", "ptAgentAuditLog"]
     .forEach((key) => assert.doesNotMatch(exportBlock, new RegExp(key), `导出不该包含 ${key}`));
+  assert.match(exportBlock, /confirm\(/, "含密钥配置导出前必须二次确认");
+  assert.match(exportBlock, /CONTAINS-SECRETS/, "文件名必须提醒用户里面有密钥");
+});
+
+test("scan JSON is privacy-safe for sharing", () => {
+  const popup = fs.readFileSync(path.join(__dirname, "popup.js"), "utf8");
+  const block = popup.slice(popup.indexOf("const exportPayload"), popup.indexOf("const copyJson"));
+  assert.match(block, /PT_AGENT_LOGGER\.redact/);
+  assert.match(block, /account:\s*\{\s*redacted:\s*true\s*\}/);
+  assert.doesNotMatch(block, /state\.scan\?\.account/);
 });
 
 test("captures uncaught errors in both the popup and the service worker", () => {

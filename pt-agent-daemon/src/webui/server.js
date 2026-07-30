@@ -18,7 +18,32 @@ const MIME = {
   ".svg": "image/svg+xml"
 };
 
-const isLoopback = (host) => /^(127\.|::1$|localhost$)/i.test(String(host || ""));
+const isLoopback = (host) => /^(127\.|::1$|localhost$)/i.test(
+  String(host || "").replace(/^\[|\]$/g, "")
+);
+
+const hostnameFromAuthority = (authority) => {
+  try {
+    return new URL(`http://${String(authority || "")}`).hostname;
+  } catch (_) {
+    return "";
+  }
+};
+
+// 本机无令牌模式只接受真正来自 loopback 名称的请求。
+// 浏览器访问恶意域名后若通过 DNS rebinding 指到 127.0.0.1，Host/Origin 仍是恶意域名，
+// 会在这里被拒绝，不能借用户浏览器读取或修改本机 WebUI。
+const isTrustedLoopbackRequest = (request) => {
+  const host = hostnameFromAuthority(request.headers.host);
+  if (!isLoopback(host)) return false;
+  const origin = String(request.headers.origin || "");
+  if (!origin) return true;
+  try {
+    return isLoopback(new URL(origin).hostname);
+  } catch (_) {
+    return false;
+  }
+};
 
 // 配置里存着下载器密码和站点 API Key。它们只需要写入，永远不该再读回浏览器，
 // 所以出站一律脱敏，只告诉前端"填过没有"。
@@ -224,7 +249,11 @@ const createServer = (ctx, { scheduler = null } = {}) => {
       const content = await fsp.readFile(full);
       response.writeHead(200, {
         "Content-Type": MIME[path.extname(full)] || "application/octet-stream",
-        "Cache-Control": "no-cache"
+        "Cache-Control": "no-store",
+        "Content-Security-Policy": "default-src 'self'; style-src 'self'; script-src 'self'; connect-src 'self'; img-src 'self' data:; object-src 'none'; base-uri 'none'; frame-ancestors 'none'",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff",
+        "X-Frame-Options": "DENY"
       });
       response.end(content);
     } catch (_) {
@@ -233,13 +262,24 @@ const createServer = (ctx, { scheduler = null } = {}) => {
   };
 
   const server = http.createServer(async (request, response) => {
-    const url = new URL(request.url, `http://${request.headers.host || "localhost"}`);
+    let url = new URL("/", "http://localhost");
     const sendJson = (status, payload) => {
-      response.writeHead(status, { "Content-Type": "application/json; charset=utf-8" });
+      response.writeHead(status, {
+        "Content-Type": "application/json; charset=utf-8",
+        "Cache-Control": "no-store",
+        "Referrer-Policy": "no-referrer",
+        "X-Content-Type-Options": "nosniff"
+      });
       response.end(JSON.stringify(payload));
     };
 
     try {
+      url = new URL(request.url, "http://localhost");
+      if (!ctx.webToken && !isTrustedLoopbackRequest(request)) {
+        sendJson(403, { error: "无令牌模式只允许通过本机回环地址访问。" });
+        return;
+      }
+
       if (!url.pathname.startsWith("/api/")) {
         await serveStatic(url, response);
         return;
@@ -247,12 +287,12 @@ const createServer = (ctx, { scheduler = null } = {}) => {
 
       if (ctx.webToken) {
         const header = String(request.headers.authorization || "");
-        const supplied = header.replace(/^Bearer\s+/i, "") || url.searchParams.get("token") || "";
+        const supplied = header.replace(/^Bearer\s+/i, "");
         // 定长比较，避免用普通字符串比较泄漏前缀信息。
         const ok = supplied.length === ctx.webToken.length &&
           crypto.timingSafeEqual(Buffer.from(supplied), Buffer.from(ctx.webToken));
         if (!ok) {
-          sendJson(401, { error: "访问令牌无效。启动时终端里打印过带 token 的地址。" });
+          sendJson(401, { error: "访问令牌无效，请在页面提示中重新输入。" });
           return;
         }
       }
@@ -293,4 +333,11 @@ const createServer = (ctx, { scheduler = null } = {}) => {
   return { server, listen, close: () => new Promise((resolve) => server.close(resolve)) };
 };
 
-module.exports = { createServer, isLoopback, maskDownloader, maskSite, maskDaemon };
+module.exports = {
+  createServer,
+  isLoopback,
+  isTrustedLoopbackRequest,
+  maskDownloader,
+  maskSite,
+  maskDaemon
+};

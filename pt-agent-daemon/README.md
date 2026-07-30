@@ -224,6 +224,8 @@ PTAGENT_DOWNLOADER_1_PASSWORD="pa ss#word"
 
 `.env` 和 `config.json` 里都存着下载器密码和站点 API Key。
 `export-env` 生成的文件权限是 600，仓库的 `.gitignore` 也挡掉了 `.env`。
+完整配置必须指定目标文件；不允许直接打印到终端。只需要模板时使用
+`ptagent config export-env --no-secrets`。
 
 ## WebUI
 
@@ -234,8 +236,9 @@ ptagent config set webHost 0.0.0.0
 ptagent config set webToken $(openssl rand -hex 16)
 ```
 
-启动时会打印带 token 的完整地址。页面上永远看不到密码和 API Key——
-接口出站前一律脱敏，只回一个「填过没有」的标记。
+启动时只打印不含 token 的地址。打开页面后输入访问令牌，令牌只保存在当前标签页，
+并通过 `Authorization` 请求头发送，不进入 URL、浏览器历史或访问日志。
+页面上永远看不到密码和 API Key——接口出站前一律脱敏，只回一个「填过没有」的标记。
 
 ## 部署
 

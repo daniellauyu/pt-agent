@@ -30,6 +30,7 @@ const HELP = `PT Agent 守护进程
   config list                打印全部配置
   config set <键> <值>       修改调度或策略配置，如 config set scanIntervalMinMinutes 30
   config export-env [文件]   把当前配置导出成 .env，用于搬到另一台机器
+    --no-secrets             导出时移除密码、API Key 和 WebUI 令牌
   import <文件.json>         导入浏览器插件「导出配置」生成的 JSON
   downloader list|add|rm|test
   site list|add|rm
@@ -170,8 +171,8 @@ const startWebUi = async (ctx, { scheduler = null } = {}) => {
   ctx.webToken = daemon.webToken;
   const web = createServer(ctx, { scheduler });
   const info = await web.listen({ host: daemon.webHost, port: daemon.webPort });
-  const url = daemon.webToken ? `${info.url}?token=${daemon.webToken}` : info.url;
-  out(`WebUI: ${url}`);
+  out(`WebUI: ${info.url}`);
+  if (daemon.webToken) out("页面打开后请输入 WebUI 访问令牌；令牌不会写进 URL 或启动日志。");
   return web;
 };
 
@@ -411,9 +412,19 @@ const commands = {
       const target = key || values[0];
       if (target) {
         fsSync.writeFileSync(target, text, { mode: 0o600 });
+        fsSync.chmodSync(target, 0o600);
         out(`已导出到 ${target}（权限 600）。`);
-        out("这个文件里有密码和 API Key，拷贝到另一台机器后放在数据目录或运行目录下即可。");
+        if (flags["no-secrets"]) {
+          out("已按 --no-secrets 移除密码、API Key 和 WebUI 令牌。");
+        } else {
+          out("⚠ 这个文件里有密码、API Key 和 WebUI 令牌，不要发到聊天、网盘或公开 Issue。");
+        }
         return;
+      }
+      if (!flags["no-secrets"]) {
+        throw new Error(
+          "拒绝把密码和 API Key 直接打印到终端。请指定目标文件，或加 --no-secrets 导出脱敏模板。"
+        );
       }
       process.stdout.write(text);
       return;

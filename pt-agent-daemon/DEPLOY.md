@@ -104,7 +104,7 @@ docker compose up -d
 docker compose logs -f
 ```
 
-WebUI：`http://127.0.0.1:7788/?token=<你刚才生成的 token>`
+WebUI：`http://127.0.0.1:7788/`。页面打开后输入刚才生成的 token；令牌不会写进 URL。
 
 几个刻意的设定：
 
@@ -234,6 +234,7 @@ ptagent config set webToken $(openssl rand -hex 16)
 ```
 
 不设令牌直接绑非回环地址会被拒绝启动——配置文件里有密码和 API Key。
+页面会提示输入令牌，并只通过 `Authorization` 请求头发送；不要把 token 拼进 URL。
 
 **服务起不来**
 ```bash

@@ -104,7 +104,8 @@ ptagent push 12345 --json        # 推送指定种子 ID（必须在最近一次
 | POST | `/api/guard/run` | body `{ "dryRun": true }` |
 | POST | `/api/push` | body `{ "torrentIds": ["12345"], "manualOverride": false }` |
 
-配置了 `webToken` 时需要 `Authorization: Bearer <token>` 或 `?token=<token>`。
+配置了 `webToken` 时只接受 `Authorization: Bearer <token>`。令牌不能放进 URL query，
+避免进入浏览器历史、代理日志和截图。
 
 密码、API Key、访问令牌在所有接口出站前一律脱敏，只会返回 `hasPassword` / `hasApiKey` / `hasWebToken`。
 

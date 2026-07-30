@@ -42,6 +42,13 @@ test("install.sh 生成的 .env 权限是 600", () => {
   assert.match(read("install.sh"), /chmod 600 "\$ENV_FILE"/);
 });
 
+test("配置导出不把密钥打到终端，覆盖文件后仍强制 0600", () => {
+  const text = read("bin/ptagent.js");
+  assert.match(text, /拒绝把密码和 API Key 直接打印到终端/);
+  assert.match(text, /chmodSync\(target, 0o600\)/);
+  assert.match(text, /--no-secrets/);
+});
+
 test("install.sh 拒绝低于 20 的 Node", () => {
   assert.match(read("install.sh"), /NODE_MAJOR" -lt 20/);
 });
@@ -84,6 +91,15 @@ test("Dockerfile 用非 root 运行并带上 vendor 目录", () => {
   const userLine = text.indexOf("\nUSER node");
   const copyLines = [...text.matchAll(/^COPY /gm)].map((match) => match.index);
   copyLines.forEach((index) => assert.ok(index < userLine, "COPY 要排在 USER 之前"));
+  assert.match(text, /Authorization:'Bearer '\+t/, "健康检查必须携带 WebUI token");
+});
+
+test("Docker build context 排除本地密钥、配置和运行日志", () => {
+  const text = read(".dockerignore");
+  for (const pattern of [".env", "*.env", "data/", "logs/", "*.jsonl", "pt-agent-config-*"]) {
+    assert.ok(text.split("\n").includes(pattern), `.dockerignore 缺少 ${pattern}`);
+  }
+  assert.match(text, /^!\.env\.example$/m, "无密钥模板仍需进入构建上下文");
 });
 
 test("compose 强制要求 WebUI 令牌", () => {
@@ -129,6 +145,10 @@ test("install.sh 在隔离目录里能跑通", () => {
     ], { encoding: "utf8", stdio: "pipe" });
     assert.match(output, /安装完成/);
     assert.ok(fs.existsSync(path.join(home, "data", "logs")), "没有建出日志目录");
+    const envFile = fs.existsSync(path.join(home, "data", ".env"))
+      ? path.join(home, "data", ".env")
+      : path.join(ROOT, ".env");
+    assert.equal(fs.statSync(envFile).mode & 0o777, 0o600);
     const wrapper = path.join(bin, "ptagent");
     assert.ok(fs.existsSync(wrapper), "没有装出 ptagent 命令");
     assert.match(fs.readFileSync(wrapper, "utf8"), /bin\/ptagent\.js/);

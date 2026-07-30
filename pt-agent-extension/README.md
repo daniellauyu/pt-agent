@@ -83,7 +83,9 @@ cp private-config.example.js private-config.js
 2. 保存时浏览器会弹出该地址的访问授权，必须允许，否则插件无法访问该下载器。
 3. 点「测试连接」确认可用。
 
-每台下载器可单独设置下载目录和分类（默认 `PT_AGENT`）。密码只保存在当前扩展的 `chrome.storage.local` 中，不会出现在导出的 JSON 里。
+每台下载器可单独设置下载目录和分类（默认 `PT_AGENT`）。密码保存在当前扩展的
+`chrome.storage.local` 中。普通的「扫描 JSON」会脱敏；用于迁移到终端守护进程的
+「含密钥配置」会包含密码和 API Key，导出时会二次确认，文件只能传到你自己的设备。
 
 ### 内外网自动切换
 

@@ -102,10 +102,10 @@ elif [ -f "$SCRIPT_DIR/.env" ]; then
   ENV_FILE="$SCRIPT_DIR/.env"
 else
   cp "$SCRIPT_DIR/.env.example" "$ENV_FILE"
-  chmod 600 "$ENV_FILE"
   warn "已从模板生成 ${ENV_FILE}，里面的密钥还是空的"
   hint "接下来要填：PTAGENT_SITE_API_KEY、PTAGENT_DOWNLOADER_1_ADDRESS / USERNAME / PASSWORD"
 fi
+chmod 600 "$ENV_FILE" 2>/dev/null || warn "无法把 ${ENV_FILE} 权限收紧为 600，请手工检查"
 
 # ---------------------------------------------------------------- ptagent 命令
 step "5/6 安装 ptagent 命令"

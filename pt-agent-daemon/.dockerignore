@@ -1,0 +1,13 @@
+.git
+.DS_Store
+.env
+*.env
+!.env.example
+data/
+logs/
+*.log
+*.jsonl
+pt-agent-config-*
+pt-agent-scan-*
+node_modules/
+coverage/

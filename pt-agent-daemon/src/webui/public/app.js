@@ -1,7 +1,10 @@
 "use strict";
 
-// 守护进程 WebUI。所有数据都来自本机的 /api/*，页面本身不直接碰站点或下载器。
-const TOKEN = new URLSearchParams(location.search).get("token") || "";
+// 守护进程 WebUI。令牌只放当前标签页的 sessionStorage，并通过 Authorization 发送；
+// 不写进 URL、浏览器历史、代理访问日志或 Referer。
+const TOKEN_KEY = "ptAgentWebToken";
+let token = sessionStorage.getItem(TOKEN_KEY) || "";
+let tokenPrompt = null;
 
 const $ = (id) => document.getElementById(id);
 const state = {
@@ -17,15 +20,40 @@ const escapeHtml = (value) => String(value ?? "").replace(/[&<>"']/g, (char) => 
   "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;"
 }[char]));
 
-const api = async (method, path, body) => {
+const askForToken = async () => {
+  if (tokenPrompt) return tokenPrompt;
+  tokenPrompt = Promise.resolve().then(() => {
+    const supplied = window.prompt("请输入 PT Agent WebUI 访问令牌。令牌只保留在当前标签页：", "");
+    const next = String(supplied || "").trim();
+    if (!next) throw new Error("需要访问令牌才能打开 WebUI。");
+    token = next;
+    sessionStorage.setItem(TOKEN_KEY, token);
+    return token;
+  }).finally(() => {
+    tokenPrompt = null;
+  });
+  return tokenPrompt;
+};
+
+const api = async (method, path, body, retryAuth = true) => {
   const url = new URL(path, location.origin);
-  if (TOKEN) url.searchParams.set("token", TOKEN);
+  const headers = {};
+  if (body !== undefined) headers["Content-Type"] = "application/json";
+  if (token) headers.Authorization = `Bearer ${token}`;
   const response = await fetch(url, {
     method,
-    headers: body === undefined ? {} : { "Content-Type": "application/json" },
+    headers,
     body: body === undefined ? undefined : JSON.stringify(body)
   });
   const payload = await response.json().catch(() => ({}));
+  if (response.status === 401) {
+    token = "";
+    sessionStorage.removeItem(TOKEN_KEY);
+    if (retryAuth) {
+      await askForToken();
+      return api(method, path, body, false);
+    }
+  }
   if (!response.ok) throw new Error(payload?.error || `请求失败（HTTP ${response.status}）`);
   return payload;
 };

@@ -21,7 +21,7 @@ USER node
 
 # 健康检查打的是 WebUI 的状态接口——它能返回就说明进程活着且配置读得出来。
 HEALTHCHECK --interval=60s --timeout=5s --start-period=15s --retries=3 \
-  CMD node -e "fetch('http://127.0.0.1:'+(process.env.PTAGENT_WEB_PORT||7788)+'/api/status').then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
+  CMD node -e "const t=process.env.PTAGENT_WEB_TOKEN||'';fetch('http://127.0.0.1:'+(process.env.PTAGENT_WEB_PORT||7788)+'/api/status',{headers:t?{Authorization:'Bearer '+t}:{}}).then(r=>process.exit(r.ok?0:1)).catch(()=>process.exit(1))"
 
 # 容器里 WebUI 必须绑 0.0.0.0，否则宿主机映射了端口也进不去。
 # 绑非回环地址时守护进程会强制要求访问令牌，所以 compose 里一定要给 PTAGENT_WEB_TOKEN。

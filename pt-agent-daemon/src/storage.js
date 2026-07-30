@@ -24,7 +24,8 @@ const createFileStorage = (filePath) => {
       // 配置文件损坏时不要静默重置：备份一份再从空开始，用户还能捞回来。
       if (error instanceof SyntaxError) {
         const backup = `${filePath}.broken-${Date.now()}`;
-        await fsp.rename(filePath, backup).catch(() => {});
+        const moved = await fsp.rename(filePath, backup).then(() => true, () => false);
+        if (moved) await fsp.chmod(backup, 0o600).catch(() => {});
         const notice = new Error(`配置文件解析失败，已备份为 ${backup}`);
         notice.code = "PTAGENT_CONFIG_CORRUPT";
         throw notice;
@@ -34,11 +35,17 @@ const createFileStorage = (filePath) => {
   };
 
   const writeAll = async (data) => {
-    await fsp.mkdir(path.dirname(filePath), { recursive: true });
+    const directory = path.dirname(filePath);
+    await fsp.mkdir(directory, { recursive: true, mode: 0o700 });
+    await fsp.chmod(directory, 0o700);
     const temporary = `${filePath}.tmp-${process.pid}`;
-    await fsp.writeFile(temporary, `${JSON.stringify(data, null, 2)}\n`, "utf8");
+    await fsp.writeFile(temporary, `${JSON.stringify(data, null, 2)}\n`, {
+      encoding: "utf8",
+      mode: 0o600
+    });
     // 先写临时文件再重命名：进程在写到一半被杀掉也不会留下半个配置。
     await fsp.rename(temporary, filePath);
+    await fsp.chmod(filePath, 0o600);
   };
 
   // 读-改-写必须串行，否则 WebUI 保存和后台扫描并发写入会互相覆盖。

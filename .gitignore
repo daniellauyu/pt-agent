@@ -16,6 +16,9 @@ pt-agent-daemon/*.env
 pt-agent-daemon/node_modules/
 pt-agent-daemon/package-lock.json
 
+# 博客原文留在本地，不进仓库。
+BLOG.md
+
 # 编辑器与临时文件。
 .idea/
 .vscode/

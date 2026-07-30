@@ -1,31 +1,22 @@
 .DS_Store
 .codegraph/
+.claude/
 
-# Local reference repositories are not part of the PT Agent source tree.
+# 本地参考仓库，不属于本项目源码。
 reference-projects/
 
-# Chrome extension local secrets.
-pt-agent-extension/private-config.js
-
-# Python local environment and runtime data.
-pt-core-service/.env
-pt-core-service/.venv/
-pt-core-service/data/
-pt-core-service/.pytest_cache/
-pt-core-service/**/__pycache__/
-*.py[cod]
-
-# 守护进程的本地配置：里面有下载器密码和站点 API Key。
+# 本地密钥：插件的预设配置和守护进程的 .env 都含下载器密码与站点 API Key。
 # .env.example 是不含密钥的模板，那个要提交。
+pt-agent-extension/private-config.js
 pt-agent-daemon/.env
 pt-agent-daemon/*.env
 !pt-agent-daemon/.env.example
 
-# Node 依赖（守护进程本身零依赖，这里只挡 npm link 产生的目录）。
+# Node 依赖（守护进程零依赖，这里只挡 npm link 产生的目录）。
 pt-agent-daemon/node_modules/
 pt-agent-daemon/package-lock.json
 
-# Editor and temporary files.
+# 编辑器与临时文件。
 .idea/
 .vscode/
 *.swp

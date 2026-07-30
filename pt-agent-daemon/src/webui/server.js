@@ -51,13 +51,18 @@ const maskDownloader = (item) => ({ ...item, password: "", hasPassword: Boolean(
 const maskSite = (item) => ({ ...item, apiKey: "", hasApiKey: Boolean(item.apiKey) });
 const maskDaemon = (item) => ({ ...item, webToken: "", hasWebToken: Boolean(item.webToken) });
 
+const publicHttpError = (status, publicMessage) => Object.assign(
+  new Error("WebUI request rejected"),
+  { status, publicMessage: String(publicMessage) }
+);
+
 const readBody = (request, limitBytes = 1024 * 1024) => new Promise((resolve, reject) => {
   const chunks = [];
   let size = 0;
   request.on("data", (chunk) => {
     size += chunk.length;
     if (size > limitBytes) {
-      reject(new Error("请求体过大"));
+      reject(publicHttpError(413, "请求体过大"));
       request.destroy();
       return;
     }
@@ -69,7 +74,7 @@ const readBody = (request, limitBytes = 1024 * 1024) => new Promise((resolve, re
     try {
       resolve(JSON.parse(raw));
     } catch (_) {
-      reject(new Error("请求体不是合法 JSON"));
+      reject(publicHttpError(400, "请求体不是合法 JSON"));
     }
   });
   request.on("error", reject);
@@ -176,7 +181,7 @@ const createServer = (ctx, { scheduler = null } = {}) => {
     const errors = ctx.engines.downloaderStore.validate(
       ctx.engines.downloaderStore.normalize({ ...body, password })
     );
-    if (errors.length) throw Object.assign(new Error(errors.join("；")), { status: 400 });
+    if (errors.length) throw publicHttpError(400, errors.join("；"));
     return maskDownloader(await ctx.downloaders.upsert({ ...body, password }));
   });
 
@@ -193,7 +198,7 @@ const createServer = (ctx, { scheduler = null } = {}) => {
   route("POST", /^\/api\/downloaders\/([^/]+)\/test$/, async (_body, params) => {
     const id = decodeURIComponent(params[0]);
     const downloader = (await ctx.downloaders.list()).find((item) => item.id === id);
-    if (!downloader) throw Object.assign(new Error("下载器不存在"), { status: 404 });
+    if (!downloader) throw publicHttpError(404, "下载器不存在");
     const client = ctx.engines.downloaderTypes.createAdapter(downloader, {
       onLog: (event, data) => ctx.logger.debug(event, data)
     });
@@ -204,7 +209,7 @@ const createServer = (ctx, { scheduler = null } = {}) => {
     const existing = (await ctx.sites.list()).find((item) => item.id === body.id);
     const apiKey = body.apiKey || existing?.apiKey || "";
     const errors = ctx.engines.siteStore.validate(ctx.engines.siteStore.normalize({ ...body, apiKey }));
-    if (errors.length) throw Object.assign(new Error(errors.join("；")), { status: 400 });
+    if (errors.length) throw publicHttpError(400, errors.join("；"));
     return maskSite(await ctx.sites.upsert({ ...body, apiKey }));
   });
 
@@ -309,7 +314,8 @@ const createServer = (ctx, { scheduler = null } = {}) => {
       const result = await matched.item.handler(body, matched.params.slice(1), url);
       sendJson(200, result === undefined ? { ok: true } : result);
     } catch (error) {
-      const status = Number(error?.status) || 500;
+      const publicMessage = typeof error?.publicMessage === "string" ? error.publicMessage : "";
+      const status = publicMessage ? Number(error?.status) || 400 : 500;
       const message = String(error?.message || error);
       // WebUI 上的每个失败都要进日志：只回给浏览器等于没人看得见。
       ctx.logger.error("webui:error", {
@@ -318,10 +324,10 @@ const createServer = (ctx, { scheduler = null } = {}) => {
         status,
         error: message
       });
-      // 4xx 是给用户修配置的可操作信息；5xx 可能带第三方响应、绝对路径或栈详情，
-      // 只进已脱敏日志，不能直接回给浏览器。
+      // 只有代码主动放进 publicMessage 白名单的提示才能返回。
+      // 其它异常可能带第三方响应、绝对路径或栈详情，只进已脱敏日志。
       sendJson(status, {
-        error: status >= 500 ? "服务器内部错误，详情已写入运行日志。" : message
+        error: publicMessage || "服务器内部错误，详情已写入运行日志。"
       });
     }
   });
@@ -343,5 +349,6 @@ module.exports = {
   isTrustedLoopbackRequest,
   maskDownloader,
   maskSite,
-  maskDaemon
+  maskDaemon,
+  publicHttpError
 };
